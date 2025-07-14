@@ -64,13 +64,16 @@ inputs:
 outputs:
   published_files:
     description: 'List of successfully published files'
-    value: ${{ steps.publish.outputs.published_files }}
+    value: "${{ steps.publish.outputs.published_files }}"
   publication_count:
     description: 'Number of files successfully published'
-    value: ${{ steps.publish.outputs.publication_count }}
+    value: "${{ steps.publish.outputs.publication_count }}"
   failed_count:
     description: 'Number of files that failed to publish'
-    value: ${{ steps.publish.outputs.failed_count }}
+    value: "${{ steps.publish.outputs.failed_count }}"
+  failed_files:
+    description: 'List of files that failed to publish'
+    value: "${{ steps.publish.outputs.failed_files }}"
 
 runs:
   using: 'composite'
@@ -80,44 +83,60 @@ runs:
       shell: bash
       run: |
         # Validate inputs
-        if [ -z "${{ inputs.nexus_server }}" ]; then
-          echo "Error: nexus_server input is required ❌"
-          exit 1
-        fi
-        if [ -z "${{ inputs.nexus_password }}" ]; then
-          echo "Error: nexus_password input is required ❌"
-          exit 1
-        fi
-        if [ -z "${{ inputs.files_path }}" ]; then
-          echo "Error: files_path input is required ❌"
-          exit 1
-        fi
+        echo 'Validating inputs...'
 
-        # Check if files path exists
-        if [ ! -e "${{ inputs.files_path }}" ]; then
-          echo "Error: Files path '${{ inputs.files_path }}' does not exist ❌"
-          exit 1
-        fi
+        # Define required inputs
+        required_inputs=("nexus_server" "nexus_password" \
+          "repository_name" "files_path")
+
+        # Check required inputs
+        for input in "${required_inputs[@]}"; do
+          case "$input" in
+            "nexus_server")
+              if [ -z "${{ inputs.nexus_server }}" ]; then
+                echo 'Error: nexus_server is required ❌'
+                exit 1
+              fi
+              ;;
+            "nexus_password")
+              if [ -z "${{ inputs.nexus_password }}" ]; then
+                echo 'Error: nexus_password is required ❌'
+                exit 1
+              fi
+              ;;
+            "repository_name")
+              if [ -z "${{ inputs.repository_name }}" ]; then
+                echo 'Error: repository_name is required ❌'
+                exit 1
+              fi
+              ;;
+            "files_path")
+              if [ -z "${{ inputs.files_path }}" ]; then
+                echo 'Error: files_path is required ❌'
+                exit 1
+              fi
+              ;;
+          esac
+        done
 
         # Validate repository format
         format="${{ inputs.repository_format }}"
-        valid_formats='raw maven2 npm docker helm pypi nuget rubygems apt yum'
-        valid_formats="$valid_formats rpm composer conan conda r go p2 gitlfs"
-        valid_formats="$valid_formats cocoapods bower"
-        if ! echo "$valid_formats" | grep -w "$format" > /dev/null; then
-          echo "Error: Invalid repository format $format ❌"
-          echo "Supported formats:"
-          echo "$valid_formats"
-          exit 1
-        fi
+        valid_formats=("raw" "maven2" "npm" "docker" "helm" \
+          "pypi" "nuget" "rubygems" "apt" "yum" "rpm" "composer" \
+          "conan" "conda" "r" "go" "p2" "gitlfs" "cocoapods" "bower")
 
-        if [ -z "${{ inputs.nexus_username }}" ]; then
-          # Extract repository name from GITHUB_REPOSITORY
-          repo_name=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f2)
-          echo "Setting Nexus username to GitHub repository: $repo_name"
-          echo "nexus_username=$repo_name" >> "$GITHUB_ENV"
-        else
-          echo "nexus_username=${{ inputs.nexus_username }}" >> "$GITHUB_ENV"
+        format_valid=false
+        for valid_format in "${valid_formats[@]}"; do
+          if [ "$format" = "$valid_format" ]; then
+            format_valid=true
+            break
+          fi
+        done
+
+        if [ "$format_valid" = false ]; then
+          echo "Error: Invalid repository format '$format' ❌"
+          echo "Supported formats: ${valid_formats[*]}"
+          exit 1
         fi
 
         echo 'All required inputs validated ✅'
@@ -127,42 +146,40 @@ runs:
       id: publish
       shell: bash
       run: |
-        # Publish artifacts to Nexus
+        # Publish artifacts to Nexus Repository
+
+        set -euo pipefail
+
+        # Input variables
         nexus_url="${{ inputs.nexus_server }}"
-        nexus_user="${{ env.nexus_username }}"
+        nexus_user="${{ inputs.nexus_username }}"
         nexus_pass="${{ inputs.nexus_password }}"
-        files_path="${{ inputs.files_path }}"
         repo_name="${{ inputs.repository_name }}"
         repo_format="${{ inputs.repository_format }}"
+        files_path="${{ inputs.files_path }}"
         file_pattern="${{ inputs.file_pattern }}"
         upload_path="${{ inputs.upload_path }}"
         coordinates="${{ inputs.coordinates }}"
         metadata="${{ inputs.metadata }}"
         validate_checksum="${{ inputs.validate_checksum }}"
 
-        # Remove trailing slash from nexus_url if present
-        nexus_url="${nexus_url%/}"
-
-        # Ensure nexus_url has a protocol scheme
-        if [[ "$nexus_url" != http://* ]] &&
-           [[ "$nexus_url" != https://* ]]; then
-          echo "⚠️  Warning: nexus_server URL '$nexus_url' missing protocol"
-          echo "   scheme. Assuming HTTPS. If you need HTTP, specify"
-          echo "   'http://' explicitly"
-          nexus_url="https://${nexus_url}"
+        # Default username to repository name if not provided
+        if [ -z "$nexus_user" ]; then
+          nexus_user="$repo_name"
         fi
 
-        echo "🔗 Using Nexus server URL: $nexus_url"
+        # Remove trailing slash from nexus_url
+        nexus_url=$(echo "$nexus_url" | sed 's|/$||')
 
         # Function to calculate checksums
         calculate_checksums() {
           local file="$1"
-          md5sum=$(md5sum "$file" | cut -d' ' -f1)
-          sha1sum=$(sha1sum "$file" | cut -d' ' -f1)
-          sha256sum=$(sha256sum "$file" | cut -d' ' -f1)
+          md5sum=$(md5sum "$file" | awk '{print $1}')
+          sha1sum=$(sha1sum "$file" | awk '{print $1}')
+          sha256sum=$(sha256sum "$file" | awk '{print $1}')
         }
 
-        # Function to get upload URL based on format
+        # Function to get format-specific upload URL
         get_upload_url() {
           local format="$1"
           local filename="$2"
@@ -170,34 +187,26 @@ runs:
           local upload_path="$4"
 
           case "$format" in
-            "raw")
-              if [ -n "$upload_path" ]; then
-                upload_path=$(echo "$upload_path" |
-                            sed 's|^/||; s|/$||')
-                base_url="${nexus_url}/repository/${repo_name}/${upload_path}"
-                echo "${base_url}/${filename}"
-              else
-                echo "${nexus_url}/repository/${repo_name}/${filename}"
-              fi
-              ;;
             "maven2")
-              # Parse Maven coordinates
-              groupId=$(echo "$coordinates" |
-                      sed -n 's/.*groupId=\([^ ]*\).*/\1/p')
-              artifactId=$(echo "$coordinates" |
-                         sed -n 's/.*artifactId=\([^ ]*\).*/\1/p')
-              version=$(echo "$coordinates" |
-                      sed -n 's/.*version=\([^ ]*\).*/\1/p')
-              classifier=$(echo "$coordinates" |
-                         sed -n 's/.*classifier=\([^ ]*\).*/\1/p')
+              # Maven format: /groupId/artifactId/version/filename
+              # Parse coordinates
+              groupId=$(echo "$coordinates" | \
+                sed -n 's/.*groupId=\([^ ]*\).*/\1/p')
+              artifactId=$(echo "$coordinates" | \
+                sed -n 's/.*artifactId=\([^ ]*\).*/\1/p')
+              version=$(echo "$coordinates" | \
+              sed -n 's/.*version=\([^ ]*\).*/\1/p')
+              classifier=$(echo "$coordinates" | \
+                sed -n 's/.*classifier=\([^ ]*\).*/\1/p')
 
-              if [ -z "$groupId" ] || [ -z "$artifactId" ] ||
-                 [ -z "$version" ]; then
-                echo "Error: Maven format requires groupId, artifactId,"
-                echo "       and version in coordinates"
+              if [ -z "$groupId" ] || [ -z "$artifactId" ] || \
+                [ -z "$version" ]; then
+                echo 'Error: Maven format requires:'
+                echo 'groupId, artifactId, and version coordinates'
                 return 1
               fi
 
+              # Convert groupId dots to slashes
               group_path=$(echo "$groupId" | tr '.' '/')
               base_name="${artifactId}-${version}"
               if [ -n "$classifier" ]; then
@@ -256,8 +265,8 @@ runs:
               fi
               ;;
             "docker")
-              echo "Error: Docker format requires special handling"
-              echo "       with registry API"
+              echo 'Error: Docker format requires special handling'
+              echo '       with registry API'
               return 1
               ;;
             *)
@@ -351,7 +360,7 @@ runs:
               if echo "$response_body" | grep -q "<html>\|<HTML>"; then
                 echo "   Error: failed to upload $filename ❌"
                 echo "   HTTP Status: $http_code, but received HTML error"
-                echo "   response"
+                echo '   response'
                 echo "   Response body: $response_body"
                 sanitized_curl_cmd=$(echo "$curl_cmd" | \
                   sed -E "s/-u '[^']*'/[REDACTED]/g")
@@ -372,7 +381,7 @@ runs:
                     --data-binary @- "${upload_url}.sha1" || true
                   echo "$sha256sum" | curl -s -f $auth_opts \
                     --data-binary @- "${upload_url}.sha256" || true
-                  echo "  📋 Checksums uploaded"
+                  echo '  📋 Checksums uploaded'
                 fi
 
                 return 0
@@ -407,11 +416,12 @@ runs:
         fi
 
         published_files=""
-        count=0
+        failed_files=""
+        publication_count=0
         failed_count=0
 
-        echo "🚀 Starting Nexus Publishing/Upload"
-        echo "📋 Configuration:"
+        echo '🚀 Starting Nexus Publishing/Upload'
+        echo '📋 Configuration:'
         echo "   Server: $nexus_url"
         echo "   Repository: $repo_name"
         echo "   Format: $repo_format"
@@ -425,33 +435,38 @@ runs:
         fi
 
         # Find files based on the specified path and pattern
+        # Use array-based collection to handle filenames with spaces
+        declare -a target_files=()
+
         if [ -f "$files_path" ]; then
-          target_files="$files_path"
+          target_files=("$files_path")
         elif [ -d "$files_path" ]; then
           if [ "$file_pattern" = "*" ]; then
-            target_files=$(find "$files_path" -type f)
+            readarray -d '' target_files < <(find "$files_path" -type f -print0)
           else
-            target_files=$(find "$files_path" -name "$file_pattern" -type f)
+            readarray -d '' target_files < <(find "$files_path" \
+              -name "$file_pattern" -type f -print0)
           fi
         else
-        echo "Error: Invalid files_path; must be file or directory ❌"
+          echo 'Error: Invalid files_path; must be file or directory ❌'
           exit 1
         fi
 
-        if [ -z "$target_files" ]; then
+        if [ ${#target_files[@]} -eq 0 ]; then
           echo "Warning: no files found matching pattern $file_pattern ⚠️"
           echo "Path: $files_path"
-          echo "published_files=" >> "$GITHUB_OUTPUT"
-          echo "publication_count=0" >> "$GITHUB_OUTPUT"
+          echo 'published_files=' >> "$GITHUB_OUTPUT"
+          echo 'failed_files=' >> "$GITHUB_OUTPUT"
+          echo 'publication_count=0' >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        echo "Found files to publish 📦"
-        echo "$target_files"
+        echo 'Found files to publish 📦'
+        printf '%s\n' "${target_files[@]}"
         echo ""
 
         # Upload each file
-        for target_file in $target_files; do
+        for target_file in "${target_files[@]}"; do
           if [ ! -f "$target_file" ]; then
             echo "Skipping non-existent file: $target_file ⚠️"
             continue
@@ -464,49 +479,65 @@ runs:
             else
               published_files="$published_files,$filename"
             fi
-            count=$((count + 1))
+            publication_count=$((publication_count + 1))
           else
+            filename=$(basename "$target_file")
+            if [ -z "$failed_files" ]; then
+              failed_files="$filename"
+            else
+              failed_files="$failed_files,$filename"
+            fi
             failed_count=$((failed_count + 1))
           fi
           echo ""
         done
 
-        echo "📊 Publication Summary:"
-        echo "  - Total files processed: $((count + failed_count))"
-        echo "  - Successfully published: $count"
+        echo '📊 Publication Summary:'
+        echo "  - Total files processed: $((publication_count + failed_count))"
+        echo "  - Successfully published: $publication_count"
         echo "  - Failed uploads: $failed_count"
         echo "  - Repository format: $repo_format"
         echo "  - Published files: $published_files"
+        if [ "$failed_count" -gt 0 ]; then
+          echo "  - Failed files: $failed_files"
+        fi
 
         # Set outputs
         echo "published_files=$published_files" >> "$GITHUB_OUTPUT"
-        echo "publication_count=$count" >> "$GITHUB_OUTPUT"
+        echo "failed_files=$failed_files" >> "$GITHUB_OUTPUT"
+        echo "publication_count=$publication_count" >> "$GITHUB_OUTPUT"
+        echo "failed_count=$failed_count" >> "$GITHUB_OUTPUT"
 
         # Add to step summary
         echo '## 📦 Nexus Publisher' >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Repository format:** $repo_format" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Total files published:** $count" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Failed uploads:** $failed_count" >> "$GITHUB_STEP_SUMMARY"
-        echo "- **Repository:** $repo_name" >> "$GITHUB_STEP_SUMMARY"
         echo "- **Server:** $nexus_url" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Repository:** $repo_name" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Repository format:** $repo_format" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Files path:** $files_path" >> "$GITHUB_STEP_SUMMARY"
         if [ -n "$upload_path" ]; then
           echo "- **Upload path:** $upload_path" >> "$GITHUB_STEP_SUMMARY"
         fi
-        if [ "$count" -gt 0 ]; then
-          summary_file="$GITHUB_STEP_SUMMARY"
-          echo "- **Published files:** $published_files" >> "$summary_file"
+        echo "- **Total files published:** $publication_count" >> \
+          "$GITHUB_STEP_SUMMARY"
+        echo "- **Failed uploads:** $failed_count" >> "$GITHUB_STEP_SUMMARY"
+        if [ "$publication_count" -gt 0 ]; then
+          echo "- **Published files:** $published_files" >> \
+            "$GITHUB_STEP_SUMMARY"
+        fi
+        if [ "$failed_count" -gt 0 ]; then
+          echo "- **Failed files:** $failed_files" >> "$GITHUB_STEP_SUMMARY"
         fi
 
         # Do NOT exit with error by default if some uploads failed
         if [ "$failed_count" -gt 0 ] && \
            [ "f${{ inputs.permit_fail }}" = 'ftrue' ]; then
-          echo "Some uploads failed; for details check job output ⚠️" \
+          echo 'Some uploads failed; for details check job output ⚠️' \
             >> "$GITHUB_STEP_SUMMARY"
 
         # Exit with error only when publishing failures NOT tolerated
         elif [ "$failed_count" -gt 0 ] && \
              [ "f${{ inputs.permit_fail }}" != 'ftrue' ]; then
-          echo "Some uploads failed; for details check job output ❌" \
+          echo 'Some uploads failed; for details check job output ❌' \
             >> "$GITHUB_STEP_SUMMARY"
           exit 1
         else
