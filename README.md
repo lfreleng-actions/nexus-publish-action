@@ -136,6 +136,7 @@ Publishes content to Sonatype Nexus Repository servers.
 | `published_files`   | Comma-separated list of published files |
 | `publication_count` | Number of files published               |
 | `failed_count`      | Number of files that failed to publish  |
+| `failed_files`      | Comma-separated list of failed files    |
 
 <!-- markdownlint-enable MD013 -->
 
