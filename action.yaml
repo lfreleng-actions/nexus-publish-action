@@ -147,13 +147,41 @@ runs:
       shell: bash
       run: |
         # Publish artifacts to Nexus Repository
+        #
+        # SECURITY NOTES:
+        # This script implements several defensive security patterns to prevent
+        # credential leakage in logs, process lists, and debug output:
+        #
+        # 1. BRACE SYNTAX FOR TRACE CONTROL: { set +x; } 2>/dev/null
+        #    - Creates compound command with comprehensive stderr suppression
+        #    - More defensive than 'set +x 2>/dev/null' against shell edge cases
+        #    - Protects against unexpected diagnostic output from builtins
+        #    - Used specifically for most critical credential operations
+        #
+        # 2. GLOBAL VARIABLE: local -g nexus_user nexus_pass netrc_file
+        #    - Creates globals within protected function scope
+        #    - Ensures atomic initialization under disabled tracing
+        #    - Prevents variables from existing in uninitialized state
+        #    - Controls exactly when/how sensitive variables are created
+        #
+        # 3. NETRC FILE: Secure .netrc file with restrictive permissions
+        #    - Writes credentials to temporary .netrc file once
+        #    - Uses chmod 600 for file-level security
+        #    - Eliminates repeated credential printf statements
+        #    - Automatic cleanup via trap ensures no credential persistence
+        #
+        # 4. STDERR SUPPRESSION: 2>/dev/null in curl commands
+        #    - Deliberate security choice for checksum uploads
+        #    - Prevents curl error messages from exposing credentials
+        #    - Used selectively where error visibility isn't critical
+        #
+        # These patterns prioritize security over simplicity. Do not "optimize"
+        # without understanding the credential protection implications.
 
         set -euo pipefail
 
         # Input variables
         nexus_url="${{ inputs.nexus_server }}"
-        nexus_user="${{ inputs.nexus_username }}"
-        nexus_pass="${{ inputs.nexus_password }}"
         repo_name="${{ inputs.repository_name }}"
         repo_format="${{ inputs.repository_format }}"
         files_path="${{ inputs.files_path }}"
@@ -163,10 +191,39 @@ runs:
         metadata="${{ inputs.metadata }}"
         validate_checksum="${{ inputs.validate_checksum }}"
 
-        # Default username to repository name if not provided
-        if [ -z "$nexus_user" ]; then
-          nexus_user="$repo_name"
-        fi
+        # Secure credential assignment function
+        assign_credentials() {
+          # Function to handle credential assignment securely
+          local -g nexus_user nexus_pass netrc_file  # See SECURITY NOTES: #2
+
+          { set +x; } 2>/dev/null  # See SECURITY NOTES: pattern #1
+          nexus_user="${{ inputs.nexus_username }}"
+          nexus_pass="${{ inputs.nexus_password }}"
+
+          # Create secure .netrc file for credential management
+          netrc_file=$(mktemp)
+          chmod 600 "$netrc_file"
+
+          # Extract hostname from nexus_url for .netrc machine entry
+          nexus_host=$(echo "$nexus_url" | \
+            sed -E 's|^https?://||' | sed 's|/.*||')
+
+          { set -x; } 2>/dev/null  # See SECURITY NOTES: #1
+
+          # Default username to repository name if not provided
+          if [ -z "$nexus_user" ]; then
+            nexus_user="$repo_name"
+          fi
+
+          { set +x; } 2>/dev/null  # See SECURITY NOTES: pattern #1
+          # Write credentials to .netrc file once
+          printf 'machine %s login %s password %s\n' \
+            "$nexus_host" "$nexus_user" "$nexus_pass" > "$netrc_file"
+          { set -x; } 2>/dev/null  # See SECURITY NOTES: #1
+        }
+
+        # Assign credentials securely
+        assign_credentials
 
         # Remove trailing slash from nexus_url
         nexus_url=$(echo "$nexus_url" | sed 's|/$||')
@@ -282,6 +339,83 @@ runs:
           esac
         }
 
+        # Secure credential handling functions
+        # These functions use .netrc file approach to keep credentials
+        # out of logs, process lists, and debug output
+
+        # Function to securely upload a file using curl --netrc
+        secure_upload_file() {
+          local file="$1"
+          local upload_url="$2"
+          local content_type="${3:-application/octet-stream}"
+
+          # Use .netrc file for secure credential management
+          curl -s -f --max-redirs 0 -w '%{http_code}\n' \
+            --netrc-file "$netrc_file" \
+            -H "Content-Type: $content_type" \
+            --upload-file "$file" \
+            "$upload_url" \
+            2>&1
+        }
+
+        # Function to securely upload checksums
+        secure_upload_checksum() {
+          local checksum_value="$1"
+          local checksum_url="$2"
+
+          printf '%s' "$checksum_value" | curl -s -f \
+            --netrc-file "$netrc_file" \
+            --data-binary @- \
+            "$checksum_url" \
+            2>/dev/null  # See SECURITY NOTES: #4
+        }
+
+        # Function to securely upload PyPI files using multipart
+        secure_upload_pypi() {
+          local file="$1"
+          local upload_url="$2"
+
+          curl -s -f --max-redirs 0 -w '%{http_code}\n' \
+            --netrc-file "$netrc_file" \
+            -F "content=@${file}" \
+            "$upload_url" \
+            2>&1
+        }
+
+        # Function to perform secure upload with debug mode protection
+        perform_secure_upload() {
+          local file="$1"
+          local upload_url="$2"
+          local format="$3"
+
+          # Isolate credential operations in a subshell to prevent
+          # debug exposure
+          (
+            # Disable command tracing for this subshell even if globally enabled
+            # Less critical than credential assignment (pattern #1)
+            set +x 2>/dev/null
+
+            # All credential operations happen here, isolated from
+            # logging
+            case "$format" in
+              "maven2")
+                secure_upload_file "$file" "$upload_url" \
+                  "application/octet-stream"
+                ;;
+              "npm")
+                secure_upload_file "$file" "$upload_url" \
+                  "application/x-compressed"
+                ;;
+              "pypi")
+                secure_upload_pypi "$file" "$upload_url"
+                ;;
+              *)
+                secure_upload_file "$file" "$upload_url"
+                ;;
+            esac
+          )
+        }
+
         # Function to upload file with format-specific logic
         upload_file() {
           local file="$1"
@@ -310,38 +444,8 @@ runs:
           echo "   Repository: $repo_name"
           echo "   URL: $upload_url"
 
-          # Prepare curl command based on format
-          case "$repo_format" in
-            "maven2")
-              # Maven uploads often require additional headers
-              curl_cmd="curl -s -f --max-redirs 0 -w '%{http_code}\n'"
-              curl_cmd="$curl_cmd -u '${nexus_user}:${nexus_pass}'"
-              curl_cmd="$curl_cmd -H 'Content-Type: application/octet-stream'"
-              curl_cmd="$curl_cmd --upload-file '$file' '$upload_url'"
-              ;;
-            "npm")
-              # npm might require specific content type
-              curl_cmd="curl -s -f --max-redirs 0 -w '%{http_code}\n'"
-              curl_cmd="$curl_cmd -u '${nexus_user}:${nexus_pass}'"
-              curl_cmd="$curl_cmd -H 'Content-Type: application/x-compressed'"
-              curl_cmd="$curl_cmd --upload-file '$file' '$upload_url'"
-              ;;
-            "pypi")
-              # PyPI uploads typically use multipart/form-data
-              curl_cmd="curl -s -f --max-redirs 0 -w '%{http_code}\n'"
-              curl_cmd="$curl_cmd -u '${nexus_user}:${nexus_pass}'"
-              curl_cmd="$curl_cmd -F 'content=@$file' '$upload_url'"
-              ;;
-            *)
-              # Default upload method
-              curl_cmd="curl -s -f --max-redirs 0 -w '%{http_code}\n'"
-              curl_cmd="$curl_cmd -u '${nexus_user}:${nexus_pass}'"
-              curl_cmd="$curl_cmd --upload-file '$file' '$upload_url'"
-              ;;
-          esac
-
-          # Execute upload and capture response
-          response=$(eval "$curl_cmd" 2>&1)
+          # Execute secure upload using protected wrapper
+          response=$(perform_secure_upload "$file" "$upload_url" "$repo_format")
           curl_exit_code=$?
 
           # Extract HTTP status code from the response
@@ -362,9 +466,7 @@ runs:
                 echo "   HTTP Status: $http_code, but received HTML error"
                 echo '   response'
                 echo "   Response body: $response_body"
-                sanitized_curl_cmd=$(echo "$curl_cmd" | \
-                  sed -E "s/-u '[^']*'/[REDACTED]/g")
-                echo "   Command: $sanitized_curl_cmd"
+                echo "   Target: $upload_url"
                 return 1
               else
                 echo "   Success: uploaded $filename ✅"
@@ -374,13 +476,12 @@ runs:
                 # supports it
                 if [ "$validate_checksum" = "true" ] &&
                    [[ "$repo_format" =~ ^(maven2|raw)$ ]]; then
-                  auth_opts="-u ${nexus_user}:${nexus_pass}"
-                  echo "$md5sum" | curl -s -f $auth_opts \
-                    --data-binary @- "${upload_url}.md5" || true
-                  echo "$sha1sum" | curl -s -f $auth_opts \
-                    --data-binary @- "${upload_url}.sha1" || true
-                  echo "$sha256sum" | curl -s -f $auth_opts \
-                    --data-binary @- "${upload_url}.sha256" || true
+                  secure_upload_checksum "$md5sum" \
+                    "${upload_url}.md5" || true
+                  secure_upload_checksum "$sha1sum" \
+                    "${upload_url}.sha1" || true
+                  secure_upload_checksum "$sha256sum" \
+                    "${upload_url}.sha256" || true
                   echo '  📋 Checksums uploaded'
                 fi
 
@@ -390,9 +491,7 @@ runs:
               echo "   Failed to upload: $filename ❌"
               echo "   HTTP Status: $http_code (expected 2xx for success)"
               echo "   Response body: $response_body"
-              sanitized_curl_cmd=$(echo "$curl_cmd" | \
-                sed -E "s/-u '[^']*'/[REDACTED]/g")
-              echo "   Command: $sanitized_curl_cmd"
+              echo "   Target: $upload_url"
               return 1
             fi
           else
@@ -400,12 +499,22 @@ runs:
             echo "   curl exit code: $curl_exit_code"
             echo "   HTTP Status: $http_code"
             echo "   Response: $response_body"
-            sanitized_curl_cmd=$(echo "$curl_cmd" | \
-              sed -E "s/-u '[^']*'/[REDACTED]/g")
-            echo "   Command: $sanitized_curl_cmd"
+            echo "   Target: $upload_url"
             return 1
           fi
         }
+
+        # Cleanup function to remove .netrc file
+        cleanup_credentials() {
+          if [ -n "${netrc_file:-}" ] && [ -f "$netrc_file" ]; then
+            { set +x; } 2>/dev/null  # See SECURITY NOTES: #1
+            rm -f "$netrc_file"
+            { set -x; } 2>/dev/null  # See SECURITY NOTES: #1
+          fi
+        }
+
+        # Ensure cleanup happens on script exit
+        trap cleanup_credentials EXIT
 
         # Prepare upload path
         if [ -n "$upload_path" ]; then
