@@ -100,6 +100,7 @@ jobs:
           nexus_server: "${{ vars.NEXUS3_SERVER }}"
           nexus_password: "${{ secrets.NEXUS_PASSWORD }}"
           repository_format: 'raw'
-          repository_name: 'helm-charts'
+          repository_name: 'helm.snapshot'
           files_path: "${{ needs.build.outputs.CHARTS_BUILD_DIR }}"
           file_pattern: '*.tgz'
+          permit_fail: 'false'
