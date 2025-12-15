@@ -101,7 +101,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                | Description |
+| Name                | Description                                          |
 | ------------------- | ---------------------------------------------------- |
 | `nexus_server`      | Nexus server URL (e.g., `https://nexus.example.com`) |
 | `nexus_password`    | Nexus password for authentication                    |
