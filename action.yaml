@@ -59,7 +59,7 @@ inputs:
     # Important; this is the default behaviour, publishing failures permitted
     description: 'Do not exit/error when some content fails to upload'
     required: false
-    default: 'true'
+    default: 'false'
 
 outputs:
   published_files:
