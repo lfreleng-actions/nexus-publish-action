@@ -121,8 +121,8 @@ runs:
 
         # Validate repository format
         format="${{ inputs.repository_format }}"
-        valid_formats=("raw" "maven2" "npm" "docker" "helm" \
-          "pypi" "nuget" "rubygems" "apt" "yum" "rpm" "composer" \
+        valid_formats=("raw" "maven2" "maven2_upload" "npm" "docker" \
+          "helm" "pypi" "nuget" "rubygems" "apt" "yum" "rpm" "composer" \
           "conan" "conda" "r" "go" "p2" "gitlfs" "cocoapods" "bower")
 
         format_valid=false
@@ -244,6 +244,18 @@ runs:
           local upload_path="$4"
 
           case "$format" in
+            "maven2_upload")
+              # Maven upload format for pre-built m2repo directory trees.
+              # Preserves the relative path from files_path as the URL path.
+              # Uses Nexus 2.x content API: /content/repositories/<repo>/
+              # The relative path is passed via upload_path by the caller.
+              if [ -z "$upload_path" ]; then
+                echo "Error: maven2_upload requires upload_path" >&2
+                return 1
+              fi
+              local base="${nexus_url}/content/repositories"
+              echo "${base}/${repo_name}/${upload_path}"
+              ;;
             "maven2")
               # Maven format: /groupId/artifactId/version/filename
               # Parse coordinates
@@ -398,7 +410,7 @@ runs:
             # All credential operations happen here, isolated from
             # logging
             case "$format" in
-              "maven2")
+              "maven2"|"maven2_upload")
                 secure_upload_file "$file" "$upload_url" \
                   "application/octet-stream"
                 ;;
@@ -431,9 +443,22 @@ runs:
             echo "  SHA256: $sha256sum"
           fi
 
+          # For maven2_upload, compute relative path from files_path root
+          # Use local variable to avoid mutating global upload_path
+          local effective_upload_path="$upload_path"
+          if [ "$repo_format" = "maven2_upload" ]; then
+            local files_root="${files_path%/}"
+            local rel_path="${file#${files_root}/}"
+            if [ "$rel_path" = "$file" ]; then
+              echo "❌ File $file is not under files_path $files_root"
+              return 1
+            fi
+            effective_upload_path="$rel_path"
+          fi
+
           # Get upload URL
           upload_url=$(get_upload_url "$repo_format" \
-            "$filename" "$coordinates" "$upload_path")
+            "$filename" "$coordinates" "$effective_upload_path")
           if [ $? -ne 0 ]; then
             echo "❌ Failed to determine upload URL for $filename"
             return 1
@@ -548,6 +573,11 @@ runs:
         declare -a target_files=()
 
         if [ -f "$files_path" ]; then
+          if [ "$repo_format" = "maven2_upload" ]; then
+            echo 'Error: maven2_upload requires files_path to be' \
+              'a directory, not a single file ❌'
+            exit 1
+          fi
           target_files=("$files_path")
         elif [ -d "$files_path" ]; then
           if [ "$file_pattern" = "*" ]; then

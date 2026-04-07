@@ -25,27 +25,28 @@ Publishes content to Sonatype Nexus Repository servers.
 
 <!-- markdownlint-enable MD013 -->
 
-| Format      | Description             | Example Files                |
-| ----------- | ----------------------- | ---------------------------- |
-| `raw`       | Generic binary files    | `*.zip`, `*.tar.gz`, `*.bin` |
-| `maven2`    | Java artifacts          | `*.jar`, `*.war`, `*.pom`    |
-| `npm`       | Node.js packages        | `*.tgz`                      |
-| `docker`    | Container images        | N/A (registry API)           |
-| `helm`      | Kubernetes charts       | `*.tgz`                      |
-| `pypi`      | Python packages         | `*.whl`, `*.tar.gz`          |
-| `nuget`     | .NET packages           | `*.nupkg`                    |
-| `rubygems`  | Ruby gems               | `*.gem`                      |
-| `apt`       | Debian packages         | `*.deb`                      |
-| `yum`/`rpm` | Red Hat packages        | `*.rpm`                      |
-| `composer`  | PHP packages            | `*.zip`                      |
-| `conan`     | C/C++ packages          | `*.tgz`                      |
-| `conda`     | Multi-language packages | `*.tar.bz2`                  |
-| `r`         | R packages              | `*.tar.gz`                   |
-| `go`        | Go modules              | `*.zip`                      |
-| `p2`        | Eclipse plugins         | `*.jar`                      |
-| `gitlfs`    | Git LFS objects         | Any large files              |
-| `cocoapods` | iOS/macOS packages      | `*.tar.gz`                   |
-| `bower`     | Frontend packages       | `*.tar.gz`                   |
+| Format          | Description             | Example Files                |
+| --------------- | ----------------------- | ---------------------------- |
+| `raw`           | Generic binary files    | `*.zip`, `*.tar.gz`, `*.bin` |
+| `maven2`        | Java artifacts          | `*.jar`, `*.war`, `*.pom`    |
+| `maven2_upload` | Maven m2repo trees      | Pre-built `m2repo/` dirs     |
+| `npm`           | Node.js packages        | `*.tgz`                      |
+| `docker`        | Container images        | N/A (registry API)           |
+| `helm`          | Kubernetes charts       | `*.tgz`                      |
+| `pypi`          | Python packages         | `*.whl`, `*.tar.gz`          |
+| `nuget`         | .NET packages           | `*.nupkg`                    |
+| `rubygems`      | Ruby gems               | `*.gem`                      |
+| `apt`           | Debian packages         | `*.deb`                      |
+| `yum`/`rpm`     | Red Hat packages        | `*.rpm`                      |
+| `composer`      | PHP packages            | `*.zip`                      |
+| `conan`         | C/C++ packages          | `*.tgz`                      |
+| `conda`         | Multi-language packages | `*.tar.bz2`                  |
+| `r`             | R packages              | `*.tar.gz`                   |
+| `go`            | Go modules              | `*.zip`                      |
+| `p2`            | Eclipse plugins         | `*.jar`                      |
+| `gitlfs`        | Git LFS objects         | Any large files              |
+| `cocoapods`     | iOS/macOS packages      | `*.tar.gz`                   |
+| `bower`         | Frontend packages       | `*.tar.gz`                   |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -93,6 +94,21 @@ Publishes content to Sonatype Nexus Repository servers.
     repository_name: "helm-charts"
     files_path: "./charts"
     file_pattern: "*.tgz"
+```
+
+### Maven m2repo Upload (Nexus 2.x)
+
+```yaml
+- name: Upload Maven m2repo to Nexus 2.x
+  uses: ./.github/actions/nexus-publish-action
+  with:
+    nexus_server: "https://nexus.example.com"
+    nexus_username: ${{ secrets.NEXUS_USERNAME }}
+    nexus_password: ${{ secrets.NEXUS_PASSWORD }}
+    repository_format: "maven2_upload"
+    repository_name: "maven-snapshots"
+    files_path: "${{ github.workspace }}/m2repo"
+    permit_fail: "false"
 ```
 
 ## Inputs
@@ -148,6 +164,14 @@ Publishes content to Sonatype Nexus Repository servers.
 - **Optional coordinates**: `classifier=sources`, `packaging=jar`
 - **Upload path**: Automatically generated from coordinates
 - **Checksums**: MD5, SHA1, SHA256 uploaded automatically
+
+### Maven2 Upload (Nexus 2.x)
+
+- **Use case**: Upload pre-built `m2repo/` directory trees to Nexus 2.x servers
+- **No coordinates needed**: The upload retains the full directory structure
+- **API endpoint**: Uses `/content/repositories/<repo>/` (Nexus 2.x)
+- **Checksums**: Not double-uploaded (m2repo already contains `.md5`/`.sha1` files)
+- **Note**: `files_path` must be a directory, not a single file
 
 ### npm
 
