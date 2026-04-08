@@ -123,7 +123,7 @@ Publishes content to Sonatype Nexus Repository servers.
 | `coordinates`       | Artifact coordinates (format-specific)                 | `""`             |
 | `metadata`          | Metadata as JSON string                                | `"{}"`           |
 | `validate_checksum` | Generate and upload checksums                          | `true`           |
-| `permit_fail`       | Do not exit/error when some content fails to upload    | `true`           |
+| `permit_fail`       | Do not exit/error when some content fails to upload    | `false`          |
 
 <!-- markdownlint-enable MD013 -->
 
