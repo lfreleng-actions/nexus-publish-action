@@ -104,3 +104,412 @@ jobs:
           files_path: "${{ needs.build.outputs.CHARTS_BUILD_DIR }}"
           file_pattern: '*.tgz'
           permit_fail: 'false'
+
+  # ---------------------------------------------------------------
+  # Error-handling validation jobs
+  # These exercise known-bad operations against a real Nexus server
+  # to verify that the action reports actionable diagnostics.
+  # ---------------------------------------------------------------
+
+  error-setup:
+    name: 'Create test fixtures for error jobs'
+    runs-on: 'ubuntu-latest'
+    # Run on main merge AND on pull requests (uses dummy files,
+    # does not need real Nexus credentials for file creation)
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Create dummy upload files'
+        shell: bash
+        run: |
+          mkdir -p test-error-files
+          for i in 1 2 3; do
+            echo "dummy-content-$i" > "test-error-files/test-$i.txt"
+          done
+
+      - name: 'Upload test fixtures'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: 'test-error-files'
+          path: 'test-error-files/'
+
+  # Test: HTTP 401 — invalid credentials
+  error-bad-credentials:
+    name: 'Error: bad credentials (HTTP 401)'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: 'ubuntu-latest'
+    needs:
+      - error-setup
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: 'Download test fixtures'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'test-error-files'
+          path: 'test-error-files'
+
+      - name: 'Upload with wrong password (expect failure)'
+        id: bad-creds
+        continue-on-error: true
+        uses: ./
+        with:
+          nexus_server: "${{ vars.NEXUS3_SERVER }}"
+          nexus_username: 'bogus-user-does-not-exist'
+          nexus_password: 'this-is-not-a-real-password'
+          repository_format: 'raw'
+          repository_name: 'helm.snapshot'
+          files_path: 'test-error-files'
+          file_pattern: '*.txt'
+          permit_fail: 'false'
+
+      - name: 'Assert: step failed'
+        shell: bash
+        run: |
+          echo "Outcome: ${{ steps.bad-creds.outcome }}"
+          if [ "${{ steps.bad-creds.outcome }}" != "failure" ]; then
+            echo "::error::Expected failure but got: \
+              ${{ steps.bad-creds.outcome }}"
+            exit 1
+          fi
+          echo "✅ Action failed as expected (bad credentials)"
+
+      - name: 'Assert: failed_count output is set'
+        shell: bash
+        run: |
+          count="${{ steps.bad-creds.outputs.failed_count }}"
+          echo "failed_count=$count"
+          if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+            echo "::error::Expected non-zero failed_count"
+            exit 1
+          fi
+          echo "✅ failed_count=$count"
+
+  # Test: HTTP 404 — non-existent repository
+  error-bad-repository:
+    name: 'Error: bad repository (HTTP 404)'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: 'ubuntu-latest'
+    needs:
+      - error-setup
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: 'Download test fixtures'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'test-error-files'
+          path: 'test-error-files'
+
+      - name: 'Upload to non-existent repository (expect failure)'
+        id: bad-repo
+        continue-on-error: true
+        uses: ./
+        with:
+          nexus_server: "${{ vars.NEXUS3_SERVER }}"
+          nexus_password: "${{ secrets.NEXUS_PASSWORD }}"
+          repository_format: 'raw'
+          repository_name: 'this-repository-does-not-exist-9999'
+          files_path: 'test-error-files'
+          file_pattern: '*.txt'
+          permit_fail: 'false'
+
+      - name: 'Assert: step failed'
+        shell: bash
+        run: |
+          echo "Outcome: ${{ steps.bad-repo.outcome }}"
+          if [ "${{ steps.bad-repo.outcome }}" != "failure" ]; then
+            echo "::error::Expected failure but got: \
+              ${{ steps.bad-repo.outcome }}"
+            exit 1
+          fi
+          echo "✅ Action failed as expected (bad repository)"
+
+      - name: 'Assert: failed_count output is set'
+        shell: bash
+        run: |
+          count="${{ steps.bad-repo.outputs.failed_count }}"
+          echo "failed_count=$count"
+          if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+            echo "::error::Expected non-zero failed_count"
+            exit 1
+          fi
+          echo "✅ failed_count=$count"
+
+  # Test: DNS resolution failure — bogus hostname
+  error-dns-failure:
+    name: 'Error: DNS failure (curl exit 6)'
+    runs-on: 'ubuntu-latest'
+    needs:
+      - error-setup
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: 'Download test fixtures'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'test-error-files'
+          path: 'test-error-files'
+
+      - name: 'Upload to unresolvable host (expect failure)'
+        id: dns-fail
+        continue-on-error: true
+        uses: ./
+        with:
+          nexus_server: 'https://nexus.does-not-exist.invalid'
+          nexus_password: 'not-relevant'
+          repository_format: 'raw'
+          repository_name: 'test-repo'
+          files_path: 'test-error-files'
+          file_pattern: '*.txt'
+          permit_fail: 'false'
+
+      - name: 'Assert: step failed'
+        shell: bash
+        run: |
+          echo "Outcome: ${{ steps.dns-fail.outcome }}"
+          if [ "${{ steps.dns-fail.outcome }}" != "failure" ]; then
+            echo "::error::Expected failure but got: \
+              ${{ steps.dns-fail.outcome }}"
+            exit 1
+          fi
+          echo "✅ Action failed as expected (DNS failure)"
+
+      - name: 'Assert: failed_count output is set'
+        shell: bash
+        run: |
+          count="${{ steps.dns-fail.outputs.failed_count }}"
+          echo "failed_count=$count"
+          if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+            echo "::error::Expected non-zero failed_count"
+            exit 1
+          fi
+          echo "✅ failed_count=$count"
+
+  # Test: fail-fast=true (default) stops after first failure
+  error-fail-fast-enabled:
+    name: 'Error: fail-fast stops after first failure'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: 'ubuntu-latest'
+    needs:
+      - error-setup
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: 'Download test fixtures'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'test-error-files'
+          path: 'test-error-files'
+
+      - name: 'Upload with bad creds, fail_fast=true (default)'
+        id: ff-enabled
+        continue-on-error: true
+        uses: ./
+        with:
+          nexus_server: "${{ vars.NEXUS3_SERVER }}"
+          nexus_username: 'bogus-user-does-not-exist'
+          nexus_password: 'this-is-not-a-real-password'
+          repository_format: 'raw'
+          repository_name: 'helm.snapshot'
+          files_path: 'test-error-files'
+          file_pattern: '*.txt'
+          permit_fail: 'false'
+          fail_fast: 'true'
+
+      - name: 'Assert: step failed'
+        shell: bash
+        run: |
+          echo "Outcome: ${{ steps.ff-enabled.outcome }}"
+          if [ "${{ steps.ff-enabled.outcome }}" != "failure" ]; then
+            echo "::error::Expected failure but got: \
+              ${{ steps.ff-enabled.outcome }}"
+            exit 1
+          fi
+          echo "✅ Action failed as expected"
+
+      - name: 'Assert: stopped after first failure'
+        shell: bash
+        run: |
+          # With 3 files and fail_fast=true, only 1 should fail
+          # (the rest are skipped)
+          failed="${{ steps.ff-enabled.outputs.failed_count }}"
+          pub="${{ steps.ff-enabled.outputs.publication_count }}"
+          echo "failed_count=$failed publication_count=$pub"
+          if [ "$failed" != "1" ]; then
+            echo "::error::Expected failed_count=1 but got: $failed"
+            exit 1
+          fi
+          echo "✅ fail-fast stopped after first failure"
+
+  # Test: fail-fast=false attempts all files before exiting
+  error-fail-fast-disabled:
+    name: 'Error: fail-fast=false attempts all files'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: 'ubuntu-latest'
+    needs:
+      - error-setup
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: 'Download test fixtures'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'test-error-files'
+          path: 'test-error-files'
+
+      - name: 'Upload with bad creds, fail_fast=false'
+        id: ff-disabled
+        continue-on-error: true
+        uses: ./
+        with:
+          nexus_server: "${{ vars.NEXUS3_SERVER }}"
+          nexus_username: 'bogus-user-does-not-exist'
+          nexus_password: 'this-is-not-a-real-password'
+          repository_format: 'raw'
+          repository_name: 'helm.snapshot'
+          files_path: 'test-error-files'
+          file_pattern: '*.txt'
+          permit_fail: 'false'
+          fail_fast: 'false'
+
+      - name: 'Assert: step failed'
+        shell: bash
+        run: |
+          echo "Outcome: ${{ steps.ff-disabled.outcome }}"
+          if [ "${{ steps.ff-disabled.outcome }}" != "failure" ]; then
+            echo "::error::Expected failure but got: \
+              ${{ steps.ff-disabled.outcome }}"
+            exit 1
+          fi
+          echo "✅ Action failed as expected"
+
+      - name: 'Assert: all files attempted'
+        shell: bash
+        run: |
+          # With 3 files and fail_fast=false, all 3 should be tried
+          failed="${{ steps.ff-disabled.outputs.failed_count }}"
+          echo "failed_count=$failed"
+          if [ "$failed" != "3" ]; then
+            echo "::error::Expected failed_count=3 but got: $failed"
+            exit 1
+          fi
+          echo "✅ All files attempted before exit (fail_fast=false)"
+
+  # Test: permit_fail=true suppresses exit code on failures
+  error-permit-fail:
+    name: 'Error: permit_fail=true exits 0'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: 'ubuntu-latest'
+    needs:
+      - error-setup
+    permissions:
+      contents: read
+    timeout-minutes: 3
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40  # v2.19.0
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: 'Download test fixtures'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'test-error-files'
+          path: 'test-error-files'
+
+      - name: 'Upload with bad creds, permit_fail=true'
+        id: permit
+        uses: ./
+        with:
+          nexus_server: "${{ vars.NEXUS3_SERVER }}"
+          nexus_username: 'bogus-user-does-not-exist'
+          nexus_password: 'this-is-not-a-real-password'
+          repository_format: 'raw'
+          repository_name: 'helm.snapshot'
+          files_path: 'test-error-files'
+          file_pattern: '*.txt'
+          permit_fail: 'true'
+
+      - name: 'Assert: step succeeded (permit_fail=true)'
+        shell: bash
+        run: |
+          echo "Outcome: ${{ steps.permit.outcome }}"
+          if [ "${{ steps.permit.outcome }}" != "success" ]; then
+            echo "::error::Expected success but got: \
+              ${{ steps.permit.outcome }}"
+            exit 1
+          fi
+          echo "✅ Action exited 0 despite failures (permit_fail=true)"
+
+      - name: 'Assert: failures were still recorded'
+        shell: bash
+        run: |
+          failed="${{ steps.permit.outputs.failed_count }}"
+          echo "failed_count=$failed"
+          if [ -z "$failed" ] || [ "$failed" -eq 0 ]; then
+            echo "::error::Expected non-zero failed_count"
+            exit 1
+          fi
+          echo "✅ Failures recorded despite permit_fail=true"

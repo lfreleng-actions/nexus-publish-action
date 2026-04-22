@@ -218,11 +218,11 @@ nexus_password: ${{ secrets.NEXUS_PASSWORD }}
 
 <!-- markdownlint-disable MD013 -->
 
-| Error                      | Diagnostic message                                   | Solution                                                 |
-| -------------------------- | ---------------------------------------------------- | -------------------------------------------------------- |
-| Invalid repository format  | `Invalid repository format 'xyz'`                    | Use a supported format name (see table above)            |
-| Missing Maven coordinates  | `Maven format requires groupId, artifactId, version` | Supply `coordinates: 'groupId=… artifactId=… version=…'` |
-| File / directory not found | `Files path './dist' does not exist`                 | Confirm the path exists before the action runs           |
+| Error                      | Diagnostic message                                     | Solution                                                 |
+| -------------------------- | ------------------------------------------------------ | -------------------------------------------------------- |
+| Invalid repository format  | `Invalid repository format 'xyz'`                      | Use a supported format name (see table above)            |
+| Missing Maven coordinates  | `Error: Maven format requires:` `groupId, artifactId`  | Supply `coordinates: 'groupId=… artifactId=… version=…'` |
+| File / directory not found | `Error: Invalid files_path; must be file or directory` | Confirm the path exists before the action runs           |
 
 <!-- markdownlint-enable MD013 -->
 
