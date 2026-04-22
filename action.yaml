@@ -210,9 +210,10 @@ runs:
 
           { set -x; } 2>/dev/null  # See SECURITY NOTES: #1
 
-          # Default username to repository name if not provided
+          # Default username to the GitHub repository name if not provided
+          # (matches the documented default in README.md)
           if [ -z "$nexus_user" ]; then
-            nexus_user="$repo_name"
+            nexus_user="${GITHUB_REPOSITORY##*/}"
           fi
 
           { set +x; } 2>/dev/null  # See SECURITY NOTES: pattern #1
