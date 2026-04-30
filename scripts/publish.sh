@@ -77,7 +77,7 @@ assign_credentials() {
   # Extract hostname from nexus_url for .netrc machine entry
   local nexus_host
   nexus_host=$(echo "$nexus_url" | \
-    sed -E 's|^https?://||' | sed 's|/.*||')
+    sed -E 's|^https?://||' | sed 's|/.*||' | sed 's|:[0-9]*$||')
 
   # Restore xtrace only if it was previously enabled
   if [ "$_xtrace_was_on" = "true" ]; then
@@ -129,6 +129,7 @@ get_upload_url() {
       echo "${base}/${repo_name}/${upload_path}"
       ;;
     "maven2")
+      local groupId artifactId version group_path base_url
       groupId=$(echo "$coordinates" | \
         sed -n 's/.*groupId=\([^ ]*\).*/\1/p')
       artifactId=$(echo "$coordinates" | \
@@ -148,17 +149,14 @@ get_upload_url() {
       echo "${base_url}/${artifactId}/${version}/${filename}"
       ;;
     "npm")
+      local package_name base_url
       # shellcheck disable=SC2001
       package_name=$(echo "$filename" | sed 's/-[0-9].*//')
-      if [[ "$package_name" == @* ]]; then
-        base_url="${nexus_url}/repository/${repo_name}/${package_name}"
-        echo "${base_url}/-/${filename}"
-      else
-        base_url="${nexus_url}/repository/${repo_name}/${package_name}"
-        echo "${base_url}/-/${filename}"
-      fi
+      base_url="${nexus_url}/repository/${repo_name}/${package_name}"
+      echo "${base_url}/-/${filename}"
       ;;
     "pypi")
+      local package_name first_letter base_url file_url
       # shellcheck disable=SC2001
       package_name=$(echo "$filename" | sed 's/-[0-9].*//')
       first_letter=$(echo "$package_name" | cut -c1 | \
@@ -170,6 +168,7 @@ get_upload_url() {
       echo "$file_url"
       ;;
     "nuget")
+      local package_name version base_url
       package_name=$(echo "$coordinates" | \
         sed -n 's/.*id=\([^ ]*\).*/\1/p')
       version=$(echo "$coordinates" | \
@@ -184,6 +183,7 @@ get_upload_url() {
       echo "${base_url}/${version}/${filename}"
       ;;
     "helm")
+      local base_url
       if [ -n "$upload_path" ]; then
         upload_path=$(echo "$upload_path" | sed 's|^/||; s|/$||')
         base_url="${nexus_url}/repository/${repo_name}/${upload_path}"
@@ -198,6 +198,7 @@ get_upload_url() {
       return 1
       ;;
     *)
+      local base_url
       if [ -n "$upload_path" ]; then
         upload_path=$(echo "$upload_path" | sed 's|^/||; s|/$||')
         base_url="${nexus_url}/repository/${repo_name}/${upload_path}"
@@ -551,8 +552,13 @@ echo 'Found files to publish 📦'
 printf '%s\n' "${target_files[@]}"
 echo ""
 
-# Upload each file
+# Upload each file. processed_count tracks the loop position
+# (incremented for every iteration, including skips) so that
+# fail-fast can compute remaining work without conflating
+# the success/failure counts with earlier non-existent skips.
+processed_count=0
 for target_file in "${target_files[@]}"; do
+  processed_count=$((processed_count + 1))
   if [ ! -f "$target_file" ]; then
     echo "Skipping non-existent file: $target_file ⚠️"
     continue
@@ -579,8 +585,17 @@ for target_file in "${target_files[@]}"; do
     # failures are not permitted
     if [ "$fail_fast" = "true" ] && \
        [ "$permit_fail" != "true" ]; then
-      skipped_fail_fast=$(( ${#target_files[@]} - publication_count \
-        - failed_count ))
+      skipped_fail_fast=0
+      # Slice from processed_count (the loop has consumed that
+      # many entries already, including any non-existent skips).
+      # Only count files still on disk so vanished entries are
+      # not misattributed to fail-fast.
+      for _remaining_file in \
+        "${target_files[@]:$processed_count}"; do
+        if [ -f "$_remaining_file" ]; then
+          skipped_fail_fast=$((skipped_fail_fast + 1))
+        fi
+      done
       echo ""
       echo "🛑 Fail-fast: stopping after first failure"
       echo "   Set fail_fast: 'false' to attempt all files"
