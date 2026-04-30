@@ -19,7 +19,13 @@ Publishes content to Sonatype Nexus Repository servers.
 - **Flexible File Selection**: Upload single files, directories, or files
   matching patterns
 - **Comprehensive Logging**: Detailed upload progress and summary reporting
-- **Error Handling**: Continues processing other files if individual uploads fail
+- **Nexus-Aware Error Handling**: Actionable diagnostics for HTTP status codes
+  (401 invalid credentials, 403 permission denied, 404 repository not found,
+  etc.) with Nexus response body extraction for both XML and JSON error formats
+- **Fail-Fast Support**: Configurable stop-on-first-failure mode to shorten
+  feedback loops when uploading large file sets
+- **Network Error Diagnostics**: Human-readable messages for connection,
+  timeout, DNS, and SSL/TLS failures
 
 ## Supported Repository Formats
 
@@ -140,6 +146,7 @@ Publishes content to Sonatype Nexus Repository servers.
 | `metadata`          | Metadata as JSON string                                | `"{}"`           |
 | `validate_checksum` | Generate and upload checksums                          | `true`           |
 | `permit_fail`       | Do not exit/error when some content fails to upload    | `false`          |
+| `fail_fast`         | Stop on first failure (when `permit_fail` is `false`)  | `true`           |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -209,58 +216,99 @@ nexus_password: ${{ secrets.NEXUS_PASSWORD }}
 
 ### Common Issues
 
-1. **Invalid repository format**
+<!-- markdownlint-disable MD013 -->
 
-   ```text
-   Error: Invalid repository format 'xyz'. Supported formats: raw maven2
-   npm docker helm pypi nuget...
-   ```
+| Error                      | Diagnostic message                                     | Solution                                                 |
+| -------------------------- | ------------------------------------------------------ | -------------------------------------------------------- |
+| Invalid repository format  | `Invalid repository format 'xyz'`                      | Use a supported format name (see table above)            |
+| Missing Maven coordinates  | `Error: Maven format requires:` `groupId, artifactId`  | Supply `coordinates: 'groupId=… artifactId=… version=…'` |
+| File / directory not found | `Error: Invalid files_path; must be file or directory` | Confirm the path exists before the action runs           |
 
-   **Solution**: Use one of the supported format names
+<!-- markdownlint-enable MD013 -->
 
-2. **Missing coordinates for Maven**
+### HTTP Error Codes
 
-   ```text
-   Error: Maven format requires groupId, artifactId, and version in coordinates
-   ```
+<!-- markdownlint-disable MD013 -->
 
-   **Solution**: Provide coordinates in the format:
-   `groupId=com.example artifactId=app version=1.0.0`
+| HTTP | Diagnostic                                 | Solution                                              |
+| ---- | ------------------------------------------ | ----------------------------------------------------- |
+| 400  | Repository locked for writes / bad request | Verify the repository accepts writes in Nexus admin   |
+| 401  | Authentication failed: invalid credentials | Check `nexus_username` and `nexus_password`           |
+| 403  | Authorisation denied: insufficient perms   | Grant write access to the upload user                 |
+| 404  | Repository or upload path not found        | Check `repository_name` and `upload_path`             |
+| 405  | HTTP method not allowed by this endpoint   | Confirm the Nexus API version matches `repo_format`   |
+| 413  | File too large for the server to accept    | Raise the upload size limit in Nexus configuration    |
+| 5xx  | Nexus internal / gateway / timeout error   | Retry later; check Nexus server health                |
 
-3. **File not found**
+<!-- markdownlint-enable MD013 -->
 
-   ```text
-   Error: Files path './dist' does not exist
-   ```
+### Network Error Codes
 
-   **Solution**: Ensure the file or directory exists before running the action
+<!-- markdownlint-disable MD013 -->
 
-4. **Authentication failure**
+| curl exit | Diagnostic                             | Solution                                        |
+| --------- | -------------------------------------- | ----------------------------------------------- |
+| 6         | DNS resolution failed                  | Verify `nexus_server` hostname resolves         |
+| 7         | Connection refused / could not connect | Check the server URL, port, and firewall rules  |
+| 28        | Operation timed out                    | The 30 s connect / 300 s request limits elapsed |
+| 35        | SSL/TLS handshake failed               | Verify certificates and TLS configuration       |
+| 56        | Network receive error                  | Investigate network stability to the server     |
 
-   ```text
-   ❌ Failed to upload: filename.jar
-   ```
+<!-- markdownlint-enable MD013 -->
 
-   **Solution**: Verify nexus_username and nexus_password are correct
+### Fail-Fast Behaviour
+
+By default (`fail_fast: 'true'`), the action stops after the first
+failure when `permit_fail` is `false`. This keeps logs short and makes
+failures straightforward to diagnose, even with large file sets.
+
+To attempt **all** uploads and get a complete success/failure summary,
+set `fail_fast: 'false'`:
+
+```yaml
+- uses: lfreleng-actions/nexus-publish-action@main
+  with:
+    fail_fast: 'false'
+    permit_fail: 'false'
+    # ... other inputs
+```
+
+<!-- markdownlint-disable MD013 -->
+
+| `permit_fail` | `fail_fast` | Behaviour                                |
+| ------------- | ----------- | ---------------------------------------- |
+| `false`       | `true`      | Stop at first failure, exit 1            |
+| `false`       | `false`     | Try all files, then exit 1 if any failed |
+| `true`        | (ignored)   | Try all files, exit 0 regardless         |
+
+<!-- markdownlint-enable MD013 -->
 
 ### Debug Information
 
 The action provides comprehensive logging including:
 
-- Configuration summary
+- Configuration summary (server, repository, format, fail-fast mode)
 - File discovery results
 - Upload URLs
-- Checksum information
-- Success/failure status for each file
+- Per-file HTTP status codes and Nexus error messages
+- Checksum upload status with per-algorithm reporting
+- Human-readable diagnostics for network and HTTP errors
+- Publication summary with success, failure, and skipped counts
 
 ## Implementation Details
 
 1. Validates inputs and repository format
 2. Discovers files based on path and pattern
 3. Determines format-specific upload URLs and methods
-4. Calculates and uploads checksums when enabled
-5. Provides detailed progress reporting
-6. Handles errors robustly and continues with remaining files
+4. Uploads files with Nexus-aware error handling:
+   - Captures full HTTP response bodies for diagnostics
+   - Parses Nexus 2.x XML and Nexus 3.x JSON error messages
+   - Translates HTTP status codes into actionable descriptions
+   - Reports network errors with human-readable curl diagnostics
+   - Enforces connection timeouts (30s) and request timeouts (300s)
+5. Calculates and uploads checksums when enabled, reporting per-algorithm
+   success or failure
+6. Supports fail-fast termination or full-run summary mode
 
 The action supports both simple raw uploads and complex format-specific
 uploads with proper metadata handling.
