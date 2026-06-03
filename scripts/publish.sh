@@ -382,7 +382,26 @@ upload_file() {
       echo "❌ File $file is not under files_path $files_root"
       return 1
     fi
-    effective_upload_path="$rel_path"
+    # When upload_path is provided, prepend it to the relative path
+    # to preserve the Maven coordinate structure in Nexus.
+    # e.g., upload_path="org/opendaylight/infrautils" + rel_path="foo/bar.jar"
+    #     → "org/opendaylight/infrautils/foo/bar.jar"
+    if [ -n "$upload_path" ]; then
+      local prefix
+      prefix=$(printf '%s' "$upload_path" | sed 's|^/||; s|/$||')
+      if [ -n "$prefix" ]; then
+        # Avoid duplicating the prefix when rel_path already starts with it
+        if [[ "$rel_path" == "${prefix}/"* ]]; then
+          effective_upload_path="$rel_path"
+        else
+          effective_upload_path="${prefix}/${rel_path}"
+        fi
+      else
+        effective_upload_path="$rel_path"
+      fi
+    else
+      effective_upload_path="$rel_path"
+    fi
   fi
 
   local upload_url
