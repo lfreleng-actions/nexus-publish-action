@@ -85,6 +85,12 @@ runs:
     - name: 'Validate inputs'
       id: validate
       shell: bash
+      env:
+        INPUT_NEXUS_SERVER: "${{ inputs.nexus_server }}"
+        INPUT_NEXUS_PASSWORD: "${{ inputs.nexus_password }}"
+        INPUT_REPOSITORY_NAME: "${{ inputs.repository_name }}"
+        INPUT_FILES_PATH: "${{ inputs.files_path }}"
+        INPUT_REPOSITORY_FORMAT: "${{ inputs.repository_format }}"
       run: |
         # Validate inputs
         echo 'Validating inputs...'
@@ -97,25 +103,25 @@ runs:
         for input in "${required_inputs[@]}"; do
           case "$input" in
             "nexus_server")
-              if [ -z "${{ inputs.nexus_server }}" ]; then
+              if [ -z "$INPUT_NEXUS_SERVER" ]; then
                 echo 'Error: nexus_server is required ❌'
                 exit 1
               fi
               ;;
             "nexus_password")
-              if [ -z "${{ inputs.nexus_password }}" ]; then
+              if [ -z "$INPUT_NEXUS_PASSWORD" ]; then
                 echo 'Error: nexus_password is required ❌'
                 exit 1
               fi
               ;;
             "repository_name")
-              if [ -z "${{ inputs.repository_name }}" ]; then
+              if [ -z "$INPUT_REPOSITORY_NAME" ]; then
                 echo 'Error: repository_name is required ❌'
                 exit 1
               fi
               ;;
             "files_path")
-              if [ -z "${{ inputs.files_path }}" ]; then
+              if [ -z "$INPUT_FILES_PATH" ]; then
                 echo 'Error: files_path is required ❌'
                 exit 1
               fi
@@ -124,7 +130,7 @@ runs:
         done
 
         # Validate repository format
-        format="${{ inputs.repository_format }}"
+        format="$INPUT_REPOSITORY_FORMAT"
         valid_formats=("raw" "maven2" "maven2_upload" "npm" "docker" \
           "helm" "pypi" "nuget" "rubygems" "apt" "yum" "rpm" "composer" \
           "conan" "conda" "r" "go" "p2" "gitlfs" "cocoapods" "bower")
