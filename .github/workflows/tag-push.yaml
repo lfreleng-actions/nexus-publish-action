@@ -13,6 +13,11 @@ on:
 
 permissions: {}
 
+# Serialize release promotions: only one tag-push run proceeds at a time
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   validate_tag:
     name: 'Validate Tag'
@@ -53,7 +58,7 @@ jobs:
     needs: validate_tag
     runs-on: 'ubuntu-latest'
     permissions:
-      contents: write
+      contents: write  # Promote (publish) the draft release
     timeout-minutes: 5
     steps:
       # Harden the runner used by this workflow
