@@ -26,6 +26,10 @@ Publishes content to Sonatype Nexus Repository servers.
   feedback loops when uploading large file sets
 - **Network Error Diagnostics**: Human-readable messages for connection,
   timeout, DNS, and SSL/TLS failures
+- **Nexus 2.x and 3.x m2repo Uploads**: `maven2_upload` supports both
+  `/content/repositories/` and `/repository/` paths via `nexus_version`
+- **Dry Run**: Exercise file discovery and URL construction without any
+  network requests or credentials
 
 ## Supported Repository Formats
 
@@ -117,6 +121,34 @@ Publishes content to Sonatype Nexus Repository servers.
     permit_fail: "false"
 ```
 
+### Maven m2repo Upload (Nexus 3.x)
+
+```yaml
+- name: Upload Maven m2repo to Nexus 3.x
+  uses: ./.github/actions/nexus-publish-action
+  with:
+    nexus_server: "https://nexus3.example.com"
+    nexus_username: ${{ secrets.NEXUS_USERNAME }}
+    nexus_password: ${{ secrets.NEXUS_PASSWORD }}
+    repository_format: "maven2_upload"
+    repository_name: "maven-snapshots"
+    files_path: "${{ github.workspace }}/m2repo"
+    nexus_version: "3"
+```
+
+### Dry-Run Self-Test
+
+```yaml
+- name: Show what would upload, without contacting Nexus
+  uses: ./.github/actions/nexus-publish-action
+  with:
+    nexus_server: "https://nexus.example.com"
+    repository_format: "maven2_upload"
+    repository_name: "maven-snapshots"
+    files_path: "${{ github.workspace }}/m2repo"
+    dry_run: "true"
+```
+
 ## Inputs
 
 ### Required
@@ -126,7 +158,6 @@ Publishes content to Sonatype Nexus Repository servers.
 | Name                | Description                                          |
 | ------------------- | ---------------------------------------------------- |
 | `nexus_server`      | Nexus server URL (e.g., `https://nexus.example.com`) |
-| `nexus_password`    | Nexus password for authentication                    |
 | `repository_format` | Repository format (see supported formats above)      |
 | `repository_name`   | Nexus repository name                                |
 | `files_path`        | Path to files directory or specific file to upload   |
@@ -139,12 +170,15 @@ Publishes content to Sonatype Nexus Repository servers.
 
 | Name                | Description                                            | Default          |
 | ------------------- | ------------------------------------------------------ | ---------------- |
+| `nexus_password`    | Nexus password; required unless `dry_run` is `true`    | `""`             |
 | `nexus_username`    | Nexus username for authentication                      | GitHub Repo Name |
 | `file_pattern`      | File pattern to match when `files_path` is a directory | `*`              |
 | `upload_path`       | Path within repository for uploads (format-specific)   | `""`             |
 | `coordinates`       | Artifact coordinates (format-specific)                 | `""`             |
 | `metadata`          | Metadata as JSON string                                | `"{}"`           |
 | `validate_checksum` | Generate and upload checksums                          | `true`           |
+| `nexus_version`     | Nexus major version for `maven2_upload`: `2` or `3`    | `2`              |
+| `dry_run`           | `true` logs planned uploads and sends nothing          | `false`          |
 | `permit_fail`       | Do not exit/error when some content fails to upload    | `false`          |
 | `fail_fast`         | Stop on first failure (when `permit_fail` is `false`)  | `true`           |
 
@@ -160,6 +194,7 @@ Publishes content to Sonatype Nexus Repository servers.
 | `publication_count` | Number of files published               |
 | `failed_count`      | Number of files that failed to publish  |
 | `failed_files`      | Comma-separated list of failed files    |
+| `dry_run_count`     | Files a dry run would publish, else `0` |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -172,11 +207,13 @@ Publishes content to Sonatype Nexus Repository servers.
 - **Upload path**: Automatically generated from coordinates
 - **Checksums**: MD5, SHA1, SHA256 uploaded automatically
 
-### Maven2 Upload (Nexus 2.x)
+### Maven2 Upload
 
-- **Use case**: Upload pre-built `m2repo/` directory trees to Nexus 2.x servers
+- **Use case**: Upload pre-built `m2repo/` directory trees to Nexus 2.x or
+  3.x servers
 - **No coordinates needed**: The upload retains the full directory structure
-- **API endpoint**: Uses `/content/repositories/<repo>/` (Nexus 2.x)
+- **API endpoint**: `/content/repositories/<repo>/` (Nexus 2.x, the default)
+  or `/repository/<repo>/` with `nexus_version: '3'`
 - **Checksums**: Not double-uploaded (m2repo already contains `.md5`/`.sha1` files)
 - **Note**: `files_path` must be a directory, not a single file
 
@@ -197,6 +234,46 @@ Publishes content to Sonatype Nexus Repository servers.
 - **Upload path**: Root of repository
 - **File pattern**: `*.tgz`
 - **Compatible with Helm repositories**
+
+## Nexus Versions
+
+`nexus_version` selects the URL layout for `maven2_upload`: `2` (default)
+uses `<server>/content/repositories/<repo>/<path>` and `3` uses
+`<server>/repository/<repo>/<path>`. All other formats already use Nexus 3.x
+`/repository/` endpoints and ignore this input. Any other value, including an
+empty one, stops the action with an error before it sets up credentials;
+omit the input to get the default.
+
+## Dry Run
+
+With `dry_run: 'true'` the action discovers files and builds every upload URL
+as a real run would, then logs each file and URL (plus checksum URLs
+when the action would generate checksums) instead of uploading. It never
+invokes `curl`, never writes a `.netrc` file and does not need
+`nexus_password`, so a pull request self-test can exercise the publish path
+without a live server or secrets. `nexus_server` is still required, because
+the dry run builds the same URLs a real run would.
+
+`dry_run` accepts `true` or `false`, in any letter case and ignoring
+surrounding whitespace. Any other value, including an empty one (for example
+from a mistyped `${{ inputs.dryrun }}` expression), stops the action with an
+error before it sets up credentials or uploads anything, so a typo can never
+turn a dry run into a live upload.
+
+A live run (`dry_run: 'false'`) still needs `nexus_password`, and stops with
+`a live run needs nexus_password` without one. The action metadata marks
+`nexus_password` optional because a dry run does not use it.
+
+Outputs in a dry run:
+
+- `dry_run_count`: number of files that would publish
+- `publication_count`: `0`, and `published_files` is empty
+- `failed_count` / `failed_files`: files for which the action could not build
+  an upload URL (for example `maven2` without coordinates)
+
+The action exits 0 unless it could not build a URL, in which case
+`permit_fail` and `fail_fast` apply as usual. The step summary always reports
+`Dry run complete; nothing uploaded`, with any URL failures listed beneath it.
 
 ## Authentication
 

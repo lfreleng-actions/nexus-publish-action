@@ -43,6 +43,10 @@ coordinates="${INPUT_COORDINATES}"
 # shellcheck disable=SC2034
 metadata="${INPUT_METADATA}"
 validate_checksum="${INPUT_VALIDATE_CHECKSUM}"
+nexus_version="${INPUT_NEXUS_VERSION-2}"
+# Unset means the default (action.yaml always sets these); an empty
+# value fails the validation below rather than silently defaulting
+dry_run="${INPUT_DRY_RUN-false}"
 fail_fast="${INPUT_FAIL_FAST}"
 permit_fail="${INPUT_PERMIT_FAIL}"
 
@@ -69,6 +73,12 @@ assign_credentials() {
   { set +x; } 2>/dev/null  # See SECURITY NOTES: #1
   nexus_user="${INPUT_NEXUS_USERNAME}"
   nexus_pass="${INPUT_NEXUS_PASSWORD}"
+
+  # Optional in action.yaml only because a dry run needs none
+  if [ -z "$nexus_pass" ]; then
+    echo 'Error: a live run needs nexus_password (dry_run is false) ❌'
+    exit 1
+  fi
 
   # Create secure .netrc file for credential management
   netrc_file=$(mktemp)
@@ -98,8 +108,29 @@ assign_credentials() {
   fi
 }
 
-# Assign credentials securely
-assign_credentials
+# dry_run guards against sending anything, so fail closed: only true
+# or false (any case, surrounding whitespace ignored) is accepted, and
+# a typo such as "ttrue" or an empty value from a mistyped expression
+# stops here, before credentials are set up or anything is uploaded.
+dry_run="${dry_run#"${dry_run%%[![:space:]]*}"}"
+dry_run="${dry_run%"${dry_run##*[![:space:]]}"}"
+dry_run="${dry_run,,}"
+if [ "$dry_run" != "true" ] && [ "$dry_run" != "false" ]; then
+  echo "Error: dry_run must be 'true' or 'false', not" \
+    "'${INPUT_DRY_RUN-}' ❌"
+  exit 1
+fi
+
+# Only maven2_upload varies by version; other formats use Nexus 3 paths
+if [ "$nexus_version" != "2" ] && [ "$nexus_version" != "3" ]; then
+  echo "Error: nexus_version must be '2' or '3', not '$nexus_version' ❌"
+  exit 1
+fi
+
+# Assign credentials securely; a dry run never contacts the server
+if [ "$dry_run" != "true" ]; then
+  assign_credentials
+fi
 
 # Remove trailing slash from nexus_url
 nexus_url="${nexus_url%/}"
@@ -126,6 +157,9 @@ get_upload_url() {
         return 1
       fi
       local base="${nexus_url}/content/repositories"
+      if [ "$nexus_version" = "3" ]; then
+        base="${nexus_url}/repository"
+      fi
       echo "${base}/${repo_name}/${upload_path}"
       ;;
     "maven2")
@@ -411,10 +445,22 @@ upload_file() {
     return 1
   fi
 
-  echo "📤 Uploading: $filename"
+  if [ "$dry_run" = "true" ]; then
+    echo "🧪 Would upload: $filename"
+  else
+    echo "📤 Uploading: $filename"
+  fi
   echo "   Format: $repo_format"
   echo "   Repository: $repo_name"
   echo "   URL: $upload_url"
+  if [ "$dry_run" = "true" ]; then
+    if [ "$validate_checksum" = "true" ] &&
+       [[ "$repo_format" =~ ^(maven2|raw)$ ]]; then
+      echo "   Checksums: ${upload_url}.{md5,sha1,sha256}"
+    fi
+    echo "   Dry run: nothing sent"
+    return 0
+  fi
 
   local response http_code response_body curl_exit_code
   if response=$(perform_secure_upload \
@@ -515,12 +561,19 @@ failed_files=""
 publication_count=0
 failed_count=0
 skipped_fail_fast=0
+dry_run_count=0
 
 echo '🚀 Starting Nexus Publishing/Upload'
 echo '📋 Configuration:'
 echo "   Server: $nexus_url"
 echo "   Repository: $repo_name"
 echo "   Format: $repo_format"
+if [ "$repo_format" = "maven2_upload" ]; then
+  echo "   Nexus version: $nexus_version"
+fi
+if [ "$dry_run" = "true" ]; then
+  echo '   Dry run: true (no uploads; credentials unused)'
+fi
 echo "   Files path: $files_path"
 echo "   File pattern: $file_pattern"
 if [ -n "$upload_path" ]; then
@@ -563,7 +616,16 @@ if [ ${#target_files[@]} -eq 0 ]; then
     echo 'failed_files='
     echo 'publication_count=0'
     echo 'failed_count=0'
+    echo 'dry_run_count=0'
   } >> "$GITHUB_OUTPUT"
+  if [ "$dry_run" = "true" ]; then
+    {
+      echo '## 📦 Nexus Publisher'
+      echo "- **Files path:** $files_path"
+      echo '- **Dry run, would publish:** 0 (no files found)'
+      echo "### Dry run complete; nothing uploaded 🧪"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
   exit 0
 fi
 
@@ -585,12 +647,16 @@ for target_file in "${target_files[@]}"; do
 
   if upload_file "$target_file"; then
     filename=$(basename "$target_file")
-    if [ -z "$published_files" ]; then
-      published_files="$filename"
+    if [ "$dry_run" = "true" ]; then
+      dry_run_count=$((dry_run_count + 1))
     else
-      published_files="$published_files,$filename"
+      if [ -z "$published_files" ]; then
+        published_files="$filename"
+      else
+        published_files="$published_files,$filename"
+      fi
+      publication_count=$((publication_count + 1))
     fi
-    publication_count=$((publication_count + 1))
   else
     filename=$(basename "$target_file")
     if [ -z "$failed_files" ]; then
@@ -631,6 +697,9 @@ total_found=${#target_files[@]}
 
 echo '📊 Publication Summary:'
 echo "  - Total files found: $total_found"
+if [ "$dry_run" = "true" ]; then
+  echo "  - Dry run, would publish: $dry_run_count"
+fi
 echo "  - Successfully published: $publication_count"
 echo "  - Failed uploads: $failed_count"
 if [ "$skipped_fail_fast" -gt 0 ]; then
@@ -648,6 +717,7 @@ fi
   echo "failed_files=$failed_files"
   echo "publication_count=$publication_count"
   echo "failed_count=$failed_count"
+  echo "dry_run_count=$dry_run_count"
 } >> "$GITHUB_OUTPUT"
 
 # Step summary
@@ -661,6 +731,9 @@ fi
     echo "- **Upload path:** $upload_path"
   fi
   echo "- **Total files found:** $total_found"
+  if [ "$dry_run" = "true" ]; then
+    echo "- **Dry run, would publish:** $dry_run_count (nothing uploaded)"
+  fi
   echo "- **Total files published:** $publication_count"
   echo "- **Failed uploads:** $failed_count"
   if [ "$skipped_fail_fast" -gt 0 ]; then
@@ -673,14 +746,18 @@ fi
     echo "- **Failed files:** $failed_files"
   fi
 
-  # Exit logic (summary messages)
+  # Exit logic (summary messages). A dry run always says so, even when
+  # some URLs could not be built; any failure is reported beneath it.
+  if [ "$dry_run" = "true" ]; then
+    echo "### Dry run complete; nothing uploaded 🧪"
+  fi
   if [ "$failed_count" -gt 0 ] && \
      [ "$permit_fail" = "true" ]; then
     echo 'Some uploads failed; for details check job output ⚠️'
   elif [ "$failed_count" -gt 0 ] && \
        [ "$permit_fail" != "true" ]; then
     echo 'Some uploads failed; for details check job output ❌'
-  else
+  elif [ "$dry_run" != "true" ]; then
     echo "### All content published successfully 🎉"
   fi
 } >> "$GITHUB_STEP_SUMMARY"
