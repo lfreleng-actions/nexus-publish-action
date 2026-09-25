@@ -562,3 +562,26 @@ jobs:
           echo "✅ Failures recorded despite permit_fail=true"
         env:
           FAILED_COUNT: ${{ steps.permit.outputs.failed_count }}
+
+  # Test: retries and maven2_upload ordering against a local mock
+  # Nexus (tests/mock_nexus.py); needs no credentials or live server
+  test-retry-and-order:
+    name: 'Test: retries and upload order (mock Nexus)'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Run publish.sh tests against mock Nexus'
+        shell: bash
+        run: bash tests/test_publish.sh
