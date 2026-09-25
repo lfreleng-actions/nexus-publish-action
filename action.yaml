@@ -11,11 +11,13 @@ description: 'Publishes content to Sonatype Nexus Repository servers'
 inputs:
   # Mandatory
   nexus_server:
+    # Required for a dry run too: it builds the same upload URLs
     description: 'Nexus server URL (e.g., https://nexus.example.com)'
     required: true
   nexus_password:
-    description: 'Nexus password for authentication'
-    required: true
+    # Checked at runtime: required unless dry_run is true
+    description: 'Nexus password; required unless dry_run is true'
+    required: false
   repository_name:
     description: 'Nexus repository name'
     required: true
@@ -55,6 +57,16 @@ inputs:
     description: 'Validate file checksums before upload'
     required: false
     default: 'true'
+  nexus_version:
+    # Other formats always use Nexus 3.x /repository/ paths
+    description: 'Nexus major version for maven2_upload paths: 2 or 3'
+    required: false
+    default: '2'
+  dry_run:
+    # Only true or false (any case); anything else fails before upload
+    description: 'Log what would upload, without any network requests'
+    required: false
+    default: 'false'
   permit_fail:
     # Important; this is the default behaviour, publishing failures permitted
     description: 'Do not exit/error when some content fails to upload'
@@ -78,6 +90,9 @@ outputs:
   failed_files:
     description: 'List of files that failed to publish'
     value: "${{ steps.publish.outputs.failed_files }}"
+  dry_run_count:
+    description: 'Number of files a dry run would publish (0 otherwise)'
+    value: "${{ steps.publish.outputs.dry_run_count }}"
 
 runs:
   using: 'composite'
@@ -91,9 +106,23 @@ runs:
         INPUT_REPOSITORY_NAME: "${{ inputs.repository_name }}"
         INPUT_FILES_PATH: "${{ inputs.files_path }}"
         INPUT_REPOSITORY_FORMAT: "${{ inputs.repository_format }}"
+        INPUT_DRY_RUN: "${{ inputs.dry_run }}"
       run: |
         # Validate inputs
         echo 'Validating inputs...'
+
+        # dry_run decides whether anything is sent, so fail closed on
+        # any value other than true/false (any case, whitespace
+        # trimmed), including an empty one; see scripts/publish.sh
+        dry_run="$INPUT_DRY_RUN"
+        dry_run="${dry_run#"${dry_run%%[![:space:]]*}"}"
+        dry_run="${dry_run%"${dry_run##*[![:space:]]}"}"
+        dry_run="${dry_run,,}"
+        if [ "$dry_run" != "true" ] && [ "$dry_run" != "false" ]; then
+          echo "Error: dry_run must be 'true' or 'false', not" \
+            "'$INPUT_DRY_RUN' ❌"
+          exit 1
+        fi
 
         # Define required inputs
         required_inputs=("nexus_server" "nexus_password" \
@@ -109,8 +138,11 @@ runs:
               fi
               ;;
             "nexus_password")
-              if [ -z "$INPUT_NEXUS_PASSWORD" ]; then
-                echo 'Error: nexus_password is required ❌'
+              # A dry run sends nothing, so it needs no credential
+              if [ -z "$INPUT_NEXUS_PASSWORD" ] && \
+                [ "$dry_run" != "true" ]; then
+                echo 'Error: a live run needs nexus_password' \
+                  '(dry_run is false) ❌'
                 exit 1
               fi
               ;;
@@ -167,6 +199,8 @@ runs:
         INPUT_COORDINATES: "${{ inputs.coordinates }}"
         INPUT_METADATA: "${{ inputs.metadata }}"
         INPUT_VALIDATE_CHECKSUM: "${{ inputs.validate_checksum }}"
+        INPUT_NEXUS_VERSION: "${{ inputs.nexus_version }}"
+        INPUT_DRY_RUN: "${{ inputs.dry_run }}"
         INPUT_PERMIT_FAIL: "${{ inputs.permit_fail }}"
         INPUT_FAIL_FAST: "${{ inputs.fail_fast }}"
       run: |

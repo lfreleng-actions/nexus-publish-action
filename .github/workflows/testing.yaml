@@ -353,6 +353,29 @@ jobs:
         env:
           FAILED_COUNT: ${{ steps.dns-fail.outputs.failed_count }}
 
+  # Test: Nexus 3 maven2_upload paths and dry-run mode; a curl shim
+  # stands in for the network, so no server or credentials are needed
+  test-nexus3-dry-run:
+    name: 'Test: Nexus 3 paths and dry run (curl shim)'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'audit'
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Run Nexus 3 path and dry-run tests'
+        shell: bash
+        run: bash tests/test_nexus3_dry_run.sh
+
   # Test: fail-fast=true (default) stops after first failure
   error-fail-fast-enabled:
     name: 'Error: fail-fast stops after first failure'
