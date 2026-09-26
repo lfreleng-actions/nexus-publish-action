@@ -89,12 +89,6 @@ jobs:
         with:
           egress-policy: 'audit'
 
-      # Required when tested action is local to this repository
-      # yamllint disable-line rule:line-length
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: 'Download Helm Charts'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -103,7 +97,7 @@ jobs:
           path: "${{ needs.build.outputs.CHARTS_BUILD_DIR }}"
 
       - name: 'Publish Helm Charts'
-        uses: ./
+        uses: $/
         with:
           nexus_server: "${{ vars.NEXUS3_SERVER }}"
           nexus_password: "${{ secrets.NEXUS_PASSWORD }}"
@@ -164,11 +158,6 @@ jobs:
         with:
           egress-policy: 'audit'
 
-      # yamllint disable-line rule:line-length
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: 'Download test fixtures'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -179,7 +168,7 @@ jobs:
       - name: 'Upload with wrong password (expect failure)'
         id: bad-creds
         continue-on-error: true
-        uses: ./
+        uses: $/
         with:
           nexus_server: "${{ vars.NEXUS3_SERVER }}"
           nexus_username: 'bogus-user-does-not-exist'
@@ -236,11 +225,6 @@ jobs:
         with:
           egress-policy: 'audit'
 
-      # yamllint disable-line rule:line-length
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: 'Download test fixtures'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -251,7 +235,7 @@ jobs:
       - name: 'Upload to non-existent repository (expect failure)'
         id: bad-repo
         continue-on-error: true
-        uses: ./
+        uses: $/
         with:
           nexus_server: "${{ vars.NEXUS3_SERVER }}"
           nexus_password: "${{ secrets.NEXUS_PASSWORD }}"
@@ -302,11 +286,6 @@ jobs:
         with:
           egress-policy: 'audit'
 
-      # yamllint disable-line rule:line-length
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: 'Download test fixtures'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -317,7 +296,7 @@ jobs:
       - name: 'Upload to unresolvable host (expect failure)'
         id: dns-fail
         continue-on-error: true
-        uses: ./
+        uses: $/
         with:
           nexus_server: 'https://nexus.does-not-exist.invalid'
           nexus_password: 'not-relevant'
@@ -369,11 +348,6 @@ jobs:
         with:
           egress-policy: 'audit'
 
-      # yamllint disable-line rule:line-length
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: 'Download test fixtures'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -384,7 +358,7 @@ jobs:
       - name: 'Upload with bad creds, fail_fast=true (default)'
         id: ff-enabled
         continue-on-error: true
-        uses: ./
+        uses: $/
         with:
           nexus_server: "${{ vars.NEXUS3_SERVER }}"
           nexus_username: 'bogus-user-does-not-exist'
@@ -442,11 +416,6 @@ jobs:
         with:
           egress-policy: 'audit'
 
-      # yamllint disable-line rule:line-length
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: 'Download test fixtures'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -457,7 +426,7 @@ jobs:
       - name: 'Upload with bad creds, fail_fast=false'
         id: ff-disabled
         continue-on-error: true
-        uses: ./
+        uses: $/
         with:
           nexus_server: "${{ vars.NEXUS3_SERVER }}"
           nexus_username: 'bogus-user-does-not-exist'
@@ -512,11 +481,6 @@ jobs:
         with:
           egress-policy: 'audit'
 
-      # yamllint disable-line rule:line-length
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: 'Download test fixtures'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -526,7 +490,7 @@ jobs:
 
       - name: 'Upload with bad creds, permit_fail=true'
         id: permit
-        uses: ./
+        uses: $/
         with:
           nexus_server: "${{ vars.NEXUS3_SERVER }}"
           nexus_username: 'bogus-user-does-not-exist'
