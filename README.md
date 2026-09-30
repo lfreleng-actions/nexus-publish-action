@@ -63,11 +63,13 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ## Usage Examples
 
+<!-- markdownlint-disable MD013 -->
+
 ### Raw Files Upload
 
 ```yaml
 - name: Upload Raw Files
-  uses: ./.github/actions/nexus-publish-action
+  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
   with:
     nexus_server: "https://nexus.example.com"
     nexus_username: "admin"
@@ -83,7 +85,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ```yaml
 - name: Upload Maven Artifacts
-  uses: ./.github/actions/nexus-publish-action
+  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
   with:
     nexus_server: "https://nexus.example.com"
     nexus_password: ${{ secrets.NEXUS_PASSWORD }}
@@ -97,7 +99,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ```yaml
 - name: Upload Helm Charts
-  uses: ./.github/actions/nexus-publish-action
+  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
   with:
     nexus_server: "https://nexus.example.com"
     nexus_password: ${{ secrets.NEXUS_PASSWORD }}
@@ -111,7 +113,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ```yaml
 - name: Upload Maven m2repo to Nexus 2.x
-  uses: ./.github/actions/nexus-publish-action
+  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
   with:
     nexus_server: "https://nexus.example.com"
     nexus_username: ${{ secrets.NEXUS_USERNAME }}
@@ -121,6 +123,8 @@ Publishes content to Sonatype Nexus Repository servers.
     files_path: "${{ github.workspace }}/m2repo"
     permit_fail: "false"
 ```
+
+<!-- markdownlint-enable MD013 -->
 
 ## Inputs
 
@@ -316,15 +320,15 @@ failures straightforward to diagnose, even with large file sets.
 To attempt **all** uploads and get a complete success/failure summary,
 set `fail_fast: 'false'`:
 
+<!-- markdownlint-disable MD013 -->
+
 ```yaml
-- uses: lfreleng-actions/nexus-publish-action@main
+- uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
   with:
     fail_fast: 'false'
     permit_fail: 'false'
     # ... other inputs
 ```
-
-<!-- markdownlint-disable MD013 -->
 
 | `permit_fail` | `fail_fast` | Behaviour                                |
 | ------------- | ----------- | ---------------------------------------- |
