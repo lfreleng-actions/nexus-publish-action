@@ -56,7 +56,7 @@ inputs:
     required: false
     default: 'true'
   permit_fail:
-    # Important; this is the default behaviour, publishing failures permitted
+    # Default: fail the step when any upload fails
     description: 'Do not exit/error when some content fails to upload'
     required: false
     default: 'false'
