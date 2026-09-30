@@ -45,6 +45,29 @@ metadata="${INPUT_METADATA}"
 validate_checksum="${INPUT_VALIDATE_CHECKSUM}"
 fail_fast="${INPUT_FAIL_FAST}"
 permit_fail="${INPUT_PERMIT_FAIL}"
+# Unset means the default (action.yaml always sets these); an empty
+# value fails the validation below rather than silently defaulting
+upload_attempts="${INPUT_UPLOAD_ATTEMPTS-4}"
+retry_delay="${INPUT_RETRY_DELAY-2}"
+
+# Upper bound on any single backoff sleep, in seconds
+max_retry_delay=60
+
+# Leading zeros are allowed and read as decimal: 10# stops Bash
+# arithmetic treating 08 or 010 as octal. Bounding the significant
+# digits in the pattern also keeps the arithmetic from overflowing.
+if ! [[ "$upload_attempts" =~ ^0*[1-9][0-9]{0,2}$ ]]; then
+  echo "Error: upload_attempts must be an integer from 1 to 999 ❌"
+  exit 1
+fi
+upload_attempts=$((10#$upload_attempts))
+if ! [[ "$retry_delay" =~ ^0*[0-9]{1,2}$ ]] || \
+   [ "$((10#$retry_delay))" -gt "$max_retry_delay" ]; then
+  echo "Error: retry_delay must be an integer from 0 to" \
+    "$max_retry_delay ❌"
+  exit 1
+fi
+retry_delay=$((10#$retry_delay))
 
 # Cleanup function to remove .netrc file
 # Registered before assign_credentials so a failure during
@@ -210,6 +233,70 @@ get_upload_url() {
   esac
 }
 
+# --- Retry handling ---
+
+# Succeeds when a failed upload is worth retrying. An HTTP status, when
+# curl received one, decides first, even if the transfer then failed:
+# any 5xx retries, and client errors (4xx) never do, so authentication,
+# permission and conflict failures stay fast and are never repeated.
+# Without a 4xx/5xx status, retry connection refused (7), timeout (28),
+# TLS handshake (35), empty reply (52) and receive error (56).
+is_transient_failure() {
+  local curl_exit="$1"
+  local http_code="$2"
+  case "$http_code" in
+    5[0-9][0-9]) return 0 ;;
+    4[0-9][0-9]) return 1 ;;
+  esac
+  case "$curl_exit" in
+    7|28|35|52|56) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+describe_failure() {
+  local curl_exit="$1"
+  local http_code="$2"
+  if [ "$curl_exit" -ne 0 ]; then
+    local msg
+    msg="curl exit $curl_exit: $(format_curl_error "$curl_exit")"
+    if [[ "$http_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+      msg="$msg, after HTTP $http_code"
+    fi
+    echo "$msg"
+  else
+    echo "HTTP $http_code: $(format_http_error "$http_code")"
+  fi
+}
+
+# Exponential backoff: retry_delay, doubling per attempt, capped
+backoff_delay() {
+  local attempt="$1"
+  local delay="$retry_delay"
+  local i
+  for ((i = 1; i < attempt; i++)); do
+    delay=$((delay * 2))
+    if [ "$delay" -ge "$max_retry_delay" ]; then
+      break
+    fi
+  done
+  if [ "$delay" -gt "$max_retry_delay" ]; then
+    delay="$max_retry_delay"
+  fi
+  echo "$delay"
+}
+
+wait_before_retry() {
+  local label="$1"
+  local attempt="$2"
+  local reason="$3"
+  local delay
+  delay=$(backoff_delay "$attempt")
+  echo "   🔁 $label: attempt $attempt/$upload_attempts failed" \
+    "($reason); retrying in ${delay}s"
+  sleep "$delay"
+}
+
 # --- Secure credential handling functions ---
 
 secure_upload_file() {
@@ -237,25 +324,46 @@ secure_upload_checksum() {
   local checksum_type="${3:-checksum}"
 
   local ck_resp ck_exit ck_http
-  if ck_resp=$(printf '%s' "$checksum_value" | curl -s \
-    --connect-timeout 10 --max-time 30 \
-    -w '%{http_code}' \
-    --netrc-file "$netrc_file" \
-    --data-binary @- \
-    "$checksum_url" \
-    2>/dev/null); then  # See SECURITY NOTES: #4
-    ck_exit=0
-  else
-    ck_exit=$?
-  fi
+  local ck_name="${checksum_url##*/}"
+  local attempt=1
+  while :; do
+    if ck_resp=$(printf '%s' "$checksum_value" | curl -s \
+      --connect-timeout 10 --max-time 30 \
+      -w '%{http_code}' \
+      --netrc-file "$netrc_file" \
+      --data-binary @- \
+      "$checksum_url" \
+      2>/dev/null); then  # See SECURITY NOTES: #4
+      ck_exit=0
+    else
+      ck_exit=$?
+    fi
+    ck_http="${ck_resp: -3}"
 
-  ck_http="${ck_resp: -3}"
+    if [ "$attempt" -ge "$upload_attempts" ] || \
+       ! is_transient_failure "$ck_exit" "$ck_http"; then
+      break
+    fi
+    wait_before_retry "$ck_name" "$attempt" \
+      "$(describe_failure "$ck_exit" "$ck_http")"
+    attempt=$((attempt + 1))
+  done
+
+  local attempts_note=""
+  if [ "$attempt" -gt 1 ]; then
+    attempts_note=" after $attempt attempts"
+  fi
   if [ $ck_exit -ne 0 ]; then
-    echo "  ⚠️  ${checksum_type} upload failed (curl exit $ck_exit)"
+    echo "  ⚠️  ${checksum_type} upload failed for ${ck_name}" \
+      "(curl exit $ck_exit)${attempts_note}"
     return 1
   elif ! [[ "$ck_http" =~ ^2[0-9][0-9]$ ]]; then
-    echo "  ⚠️  ${checksum_type} upload failed (HTTP $ck_http)"
+    echo "  ⚠️  ${checksum_type} upload failed for ${ck_name}" \
+      "(HTTP $ck_http)${attempts_note}"
     return 1
+  fi
+  if [ -n "$attempts_note" ]; then
+    echo "  📋 ${ck_name} uploaded${attempts_note}"
   fi
   return 0
 }
@@ -417,21 +525,37 @@ upload_file() {
   echo "   URL: $upload_url"
 
   local response http_code response_body curl_exit_code
-  if response=$(perform_secure_upload \
-    "$file" "$upload_url" "$repo_format"); then
-    curl_exit_code=0
-  else
-    curl_exit_code=$?
-  fi
+  local attempt=1
+  while :; do
+    if response=$(perform_secure_upload \
+      "$file" "$upload_url" "$repo_format"); then
+      curl_exit_code=0
+    else
+      curl_exit_code=$?
+    fi
 
-  http_code=$(echo "$response" | tail -n 1)
-  response_body=$(echo "$response" | sed '$d')
+    http_code=$(echo "$response" | tail -n 1)
+    response_body=$(echo "$response" | sed '$d')
+
+    if [ "$attempt" -ge "$upload_attempts" ] || \
+       ! is_transient_failure "$curl_exit_code" "$http_code"; then
+      break
+    fi
+    wait_before_retry "$filename" "$attempt" \
+      "$(describe_failure "$curl_exit_code" "$http_code")"
+    attempt=$((attempt + 1))
+  done
+
+  local attempts_note=""
+  if [ "$attempt" -gt 1 ]; then
+    attempts_note=" after $attempt attempts"
+  fi
 
   # Network / transport-level failure
   if [ "$curl_exit_code" -ne 0 ]; then
     local curl_reason
     curl_reason=$(format_curl_error "$curl_exit_code")
-    echo "   ❌ Failed to upload: $filename"
+    echo "   ❌ Failed to upload: $filename${attempts_note}"
     echo "   Reason: $curl_reason"
     echo "   curl exit code: $curl_exit_code"
     if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
@@ -458,7 +582,7 @@ upload_file() {
       return 1
     fi
 
-    echo "   ✅ Uploaded: $filename (HTTP $http_code)"
+    echo "   ✅ Uploaded: $filename (HTTP $http_code)${attempts_note}"
 
     if [ "$validate_checksum" = "true" ] &&
        [[ "$repo_format" =~ ^(maven2|raw)$ ]]; then
@@ -487,7 +611,7 @@ upload_file() {
   http_reason=$(format_http_error "$http_code")
   nexus_msg=$(extract_nexus_message "$response_body")
 
-  echo "   ❌ Failed to upload: $filename"
+  echo "   ❌ Failed to upload: $filename${attempts_note}"
   echo "   HTTP Status: $http_code — $http_reason"
   if [ -n "$nexus_msg" ]; then
     echo "   Nexus message: $nexus_msg"
@@ -496,6 +620,61 @@ upload_file() {
   fi
   echo "   Target: $upload_url"
   return 1
+}
+
+# --- maven2_upload ordering ---
+
+is_maven_metadata() {
+  [[ "${1##*/}" == maven-metadata.xml* ]]
+}
+
+# Print the arguments NUL-separated in byte order. With "deepest" as
+# the first argument, paths with more directory levels sort first.
+sort_paths() {
+  local mode="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0
+  if [ "$mode" != "deepest" ]; then
+    printf '%s\0' "$@" | LC_ALL=C sort -z
+    return
+  fi
+  local path slashes
+  for path in "$@"; do
+    slashes="${path//[^\/]/}"
+    printf '%06d\t%s\0' "$((999999 - ${#slashes}))" "$path"
+  done | LC_ALL=C sort -z | while IFS= read -r -d '' path; do
+    printf '%s\0' "${path#*$'\t'}"
+  done
+}
+
+# Reorder target_files so Nexus never advertises content that is not
+# there yet: artefacts (signatures travel with them), then checksums,
+# then maven-metadata.xml and its siblings last, deepest first so
+# version-level metadata lands before artifact-level metadata.
+order_maven2_upload_files() {
+  local -a artefacts=() checksums=() metadata=() sorted=()
+  local path
+  for path in "${target_files[@]}"; do
+    if is_maven_metadata "$path"; then
+      metadata+=("$path")
+      continue
+    fi
+    case "${path##*/}" in
+      *.md5|*.sha1|*.sha256|*.sha512) checksums+=("$path") ;;
+      *) artefacts+=("$path") ;;
+    esac
+  done
+
+  target_files=()
+  readarray -d '' sorted < <(sort_paths bytes "${artefacts[@]}")
+  target_files+=("${sorted[@]}")
+  readarray -d '' sorted < <(sort_paths bytes "${checksums[@]}")
+  target_files+=("${sorted[@]}")
+  readarray -d '' sorted < <(sort_paths deepest "${metadata[@]}")
+  target_files+=("${sorted[@]}")
+
+  echo "Upload order: ${#artefacts[@]} artefacts, ${#checksums[@]}" \
+    "checksums, then ${#metadata[@]} maven-metadata files"
 }
 
 # NOTE: cleanup_credentials and its trap are registered near the
@@ -531,6 +710,7 @@ if [ -n "$coordinates" ]; then
 fi
 echo "   Permit fail: $permit_fail"
 echo "   Fail fast: $fail_fast"
+echo "   Upload attempts: $upload_attempts (retry delay ${retry_delay}s)"
 
 # Find files
 declare -a target_files=()
@@ -567,19 +747,57 @@ if [ ${#target_files[@]} -eq 0 ]; then
   exit 0
 fi
 
+if [ "$repo_format" = "maven2_upload" ]; then
+  order_maven2_upload_files
+fi
+
 echo 'Found files to publish 📦'
 printf '%s\n' "${target_files[@]}"
 echo ""
+
+record_failure() {
+  local name
+  name=$(basename "$1")
+  if [ -z "$failed_files" ]; then
+    failed_files="$name"
+  else
+    failed_files="$failed_files,$name"
+  fi
+  failed_count=$((failed_count + 1))
+}
 
 # Upload each file. processed_count tracks the loop position
 # (incremented for every iteration, including skips) so that
 # fail-fast can compute remaining work without conflating
 # the success/failure counts with earlier non-existent skips.
 processed_count=0
+# maven2_upload: metadata files withheld after an earlier failure
+held_back_count=0
 for target_file in "${target_files[@]}"; do
   processed_count=$((processed_count + 1))
   if [ ! -f "$target_file" ]; then
     echo "Skipping non-existent file: $target_file ⚠️"
+    continue
+  fi
+
+  # Publishing metadata after a failed artefact or checksum would
+  # advertise content that Nexus does not hold, so withhold it and
+  # report it as failed. Metadata sorts last, so every artefact and
+  # checksum has already been attempted by this point. A failed
+  # metadata file also withholds the rest: its checksum siblings
+  # would otherwise mismatch the copy still on the server.
+  if [ "$repo_format" = "maven2_upload" ] && \
+     [ "$failed_count" -gt 0 ] && \
+     is_maven_metadata "$target_file"; then
+    if [ "$held_back_count" -eq 0 ]; then
+      echo "🛑 Holding back maven-metadata files: $failed_count" \
+        "earlier upload(s) failed"
+      echo '   Publishing metadata now would advertise content' \
+        'missing from Nexus'
+    fi
+    echo "   Held back: $target_file"
+    held_back_count=$((held_back_count + 1))
+    record_failure "$target_file"
     continue
   fi
 
@@ -592,13 +810,7 @@ for target_file in "${target_files[@]}"; do
     fi
     publication_count=$((publication_count + 1))
   else
-    filename=$(basename "$target_file")
-    if [ -z "$failed_files" ]; then
-      failed_files="$filename"
-    else
-      failed_files="$failed_files,$filename"
-    fi
-    failed_count=$((failed_count + 1))
+    record_failure "$target_file"
 
     # Fail-fast: stop on first failure when enabled and
     # failures are not permitted
@@ -633,6 +845,9 @@ echo '📊 Publication Summary:'
 echo "  - Total files found: $total_found"
 echo "  - Successfully published: $publication_count"
 echo "  - Failed uploads: $failed_count"
+if [ "$held_back_count" -gt 0 ]; then
+  echo "  - Metadata held back (counted as failed): $held_back_count"
+fi
 if [ "$skipped_fail_fast" -gt 0 ]; then
   echo "  - Skipped (fail-fast): $skipped_fail_fast"
 fi
@@ -663,6 +878,9 @@ fi
   echo "- **Total files found:** $total_found"
   echo "- **Total files published:** $publication_count"
   echo "- **Failed uploads:** $failed_count"
+  if [ "$held_back_count" -gt 0 ]; then
+    echo "- **Metadata held back (counted as failed):** $held_back_count"
+  fi
   if [ "$skipped_fail_fast" -gt 0 ]; then
     echo "- **Skipped (fail-fast):** $skipped_fail_fast"
   fi

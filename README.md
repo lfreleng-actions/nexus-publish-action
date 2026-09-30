@@ -24,6 +24,11 @@ Publishes content to Sonatype Nexus Repository servers.
   etc.) with Nexus response body extraction for both XML and JSON error formats
 - **Fail-Fast Support**: Configurable stop-on-first-failure mode to shorten
   feedback loops when uploading large file sets
+- **Transient-Failure Retries**: Bounded exponential backoff for network
+  errors and HTTP 5xx responses; client errors (4xx) fail at once
+- **Safe Maven Metadata Ordering**: `maven2_upload` publishes artefacts, then
+  checksums, then `maven-metadata.xml` files last, and withholds the metadata
+  if any artefact or checksum failed
 - **Network Error Diagnostics**: Human-readable messages for connection,
   timeout, DNS, and SSL/TLS failures
 
@@ -147,6 +152,8 @@ Publishes content to Sonatype Nexus Repository servers.
 | `validate_checksum` | Generate and upload checksums                          | `true`           |
 | `permit_fail`       | Do not exit/error when some content fails to upload    | `false`          |
 | `fail_fast`         | Stop on first failure (when `permit_fail` is `false`)  | `true`           |
+| `upload_attempts`   | Max attempts per file (1-999); `1` disables retries    | `4`              |
+| `retry_delay`       | First retry backoff in seconds (0-60); doubles, max 60 | `2`              |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -178,6 +185,21 @@ Publishes content to Sonatype Nexus Repository servers.
 - **No coordinates needed**: The upload retains the full directory structure
 - **API endpoint**: Uses `/content/repositories/<repo>/` (Nexus 2.x)
 - **Checksums**: Not double-uploaded (m2repo already contains `.md5`/`.sha1` files)
+- **Upload order**: Artefacts (with their `.asc` signatures), then checksum
+  files (`.md5`, `.sha1`, `.sha256`, `.sha512`), then `maven-metadata.xml` and
+  its siblings last; each group sorts by path, and metadata sorts deepest
+  directory first
+- **Metadata hold-back**: If any artefact or checksum upload fails, the action
+  does not upload the `maven-metadata.xml*` files, so Nexus never advertises a
+  SNAPSHOT whose files are missing. A failed metadata file holds back the
+  metadata after it too, so checksums never mismatch the copy still on the
+  server. How the action reports the withheld files depends on the mode:
+  - With `fail_fast` (the default), the run stops at the first failure, so
+    the metadata counts as skipped (`Skipped (fail-fast)` in the log and step
+    summary), not in `failed_count` or `failed_files`
+  - With `fail_fast: 'false'` or `permit_fail: 'true'`, the action attempts
+    every artefact and checksum, then logs why it holds the metadata back and
+    counts each held-back file in `failed_count` and `failed_files`
 - **Note**: `files_path` must be a directory, not a single file
 
 ### npm
@@ -238,7 +260,7 @@ nexus_password: ${{ secrets.NEXUS_PASSWORD }}
 | 404  | Repository or upload path not found        | Check `repository_name` and `upload_path`             |
 | 405  | HTTP method not allowed by this endpoint   | Confirm the Nexus API version matches `repo_format`   |
 | 413  | File too large for the server to accept    | Raise the upload size limit in Nexus configuration    |
-| 5xx  | Nexus internal / gateway / timeout error   | Retry later; check Nexus server health                |
+| 5xx  | Nexus internal / gateway / timeout error   | Retried automatically; check Nexus server health      |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -252,9 +274,38 @@ nexus_password: ${{ secrets.NEXUS_PASSWORD }}
 | 7         | Connection refused / could not connect | Check the server URL, port, and firewall rules  |
 | 28        | Operation timed out                    | The 30 s connect / 300 s request limits elapsed |
 | 35        | SSL/TLS handshake failed               | Verify certificates and TLS configuration       |
+| 52        | Server returned nothing (empty reply)  | Investigate proxies or load balancers en route  |
 | 56        | Network receive error                  | Investigate network stability to the server     |
 
 <!-- markdownlint-enable MD013 -->
+
+### Retry Behaviour
+
+The action retries each file, and each generated checksum, on transient
+failures: curl exits 7, 28, 35, 52 and 56 (see the table above) and any HTTP
+5xx response. It makes up to `upload_attempts` attempts in total. The wait
+before each retry starts at `retry_delay` seconds and doubles, capped at 60
+seconds, so the defaults wait 2, 4 and 8 seconds. Each retry logs the file
+(for a generated checksum, the checksum file), the attempt number and the
+reason. Both inputs take whole decimal numbers, `upload_attempts` from 1 to
+999 and `retry_delay` from 0 to 60; a leading zero is decimal, so `010` means
+10. The action rejects any other value before uploading, including an empty
+one; omit an input to get its default.
+
+HTTP 4xx responses never retry, so invalid credentials, missing permissions
+and redeploy conflicts still fail at once. The HTTP status decides whenever
+curl received one, even if the transfer then failed: a 4xx followed by a
+dropped connection does not retry, and a 5xx followed by a truncated reply
+does. When no HTTP status arrived, the curl exit list applies. Other curl
+errors, such as DNS failures (exit 6), fail without retrying. A file that
+still fails after its last attempt counts towards `failed_count` and follows
+the `permit_fail` and `fail_fast` rules below.
+
+For `maven2_upload`, metadata uploads last. With `fail_fast` enabled, a failed
+artefact stops the run before Nexus receives any `maven-metadata.xml` that
+would reference it. With `fail_fast: 'false'` or `permit_fail: 'true'`, the
+action still attempts every artefact and checksum, then holds back the
+metadata as described under Maven2 Upload.
 
 ### Fail-Fast Behaviour
 
@@ -291,6 +342,7 @@ The action provides comprehensive logging including:
 - File discovery results
 - Upload URLs
 - Per-file HTTP status codes and Nexus error messages
+- Retry attempts with the reason for each
 - Checksum upload status with per-algorithm reporting
 - Human-readable diagnostics for network and HTTP errors
 - Publication summary with success, failure, and skipped counts
@@ -298,7 +350,8 @@ The action provides comprehensive logging including:
 ## Implementation Details
 
 1. Validates inputs and repository format
-2. Discovers files based on path and pattern
+2. Discovers files based on path and pattern; `maven2_upload` orders them
+   artefacts, checksums, then metadata
 3. Determines format-specific upload URLs and methods
 4. Uploads files with Nexus-aware error handling:
    - Captures full HTTP response bodies for diagnostics
@@ -306,6 +359,7 @@ The action provides comprehensive logging including:
    - Translates HTTP status codes into actionable descriptions
    - Reports network errors with human-readable curl diagnostics
    - Enforces connection timeouts (30s) and request timeouts (300s)
+   - Retries transient network errors and HTTP 5xx with exponential backoff
 5. Calculates and uploads checksums when enabled, reporting per-algorithm
    success or failure
 6. Supports fail-fast termination or full-run summary mode

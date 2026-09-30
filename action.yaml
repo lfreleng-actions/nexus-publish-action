@@ -64,6 +64,15 @@ inputs:
     description: 'Stop on first failure (when permit_fail is false)'
     required: false
     default: 'true'
+  upload_attempts:
+    # Transient failures only: curl exit 7/28/35/52/56 and HTTP 5xx
+    description: 'Maximum upload attempts per file, 1-999 (1: no retries)'
+    required: false
+    default: '4'
+  retry_delay:
+    description: 'Initial retry backoff in seconds, 0-60; doubles, max 60'
+    required: false
+    default: '2'
 
 outputs:
   published_files:
@@ -169,5 +178,7 @@ runs:
         INPUT_VALIDATE_CHECKSUM: "${{ inputs.validate_checksum }}"
         INPUT_PERMIT_FAIL: "${{ inputs.permit_fail }}"
         INPUT_FAIL_FAST: "${{ inputs.fail_fast }}"
+        INPUT_UPLOAD_ATTEMPTS: "${{ inputs.upload_attempts }}"
+        INPUT_RETRY_DELAY: "${{ inputs.retry_delay }}"
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/publish.sh"
