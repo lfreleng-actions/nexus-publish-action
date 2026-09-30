@@ -28,11 +28,26 @@ import json
 import os
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import TYPE_CHECKING, TypeVar, cast, final
+
+if TYPE_CHECKING:
+    from typing import override
+else:
+    try:
+        from typing import override
+    except ImportError:  # Python < 3.12: a no-op stand-in
+        _F = TypeVar("_F")
+
+        def override(func: _F) -> _F:
+            """Mark a method as overriding one in a base class."""
+            return func
+
 
 LOG = os.environ.get("MOCK_LOG", "/tmp/nexus_publish_requests.log")
 PORT_FILE = os.environ.get("MOCK_PORT_FILE", "/tmp/nexus_publish_mock.port")
-RESPONSES: dict[str, list[int | str]] = json.loads(
-    os.environ.get("MOCK_RESPONSES", "{}")
+RESPONSES = cast(
+    "dict[str, list[int | str]]",
+    json.loads(os.environ.get("MOCK_RESPONSES", "{}")),
 )
 
 # Requests seen so far per matched suffix, to step through RESPONSES
@@ -53,6 +68,7 @@ def _next_response(path: str) -> int | str:
     return 201
 
 
+@final
 class Handler(BaseHTTPRequestHandler):
     """Record uploads and answer with the scripted response."""
 
@@ -88,6 +104,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._handle_upload()
 
+    @override
     def log_message(self, format: str, *args: object) -> None:
         return
 
