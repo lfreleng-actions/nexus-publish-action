@@ -19,3 +19,5 @@ typeCheckingMode = "recommended"
 # name no targets, a bare basedpyright and an editor's language
 # server, which then analyse the same set the hook does.
 include = ["tests"]
+# Version-gated fallbacks for older Pythons are unreachable at 3.12
+reportUnreachable = false
