@@ -26,21 +26,19 @@ named by ``MOCK_PORT_FILE``; the socket is already listening by then.
 
 import json
 import os
+import sys
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import TYPE_CHECKING, TypeVar, cast, final
+from typing import TypeVar, cast, final
 
-if TYPE_CHECKING:
+if sys.version_info >= (3, 12):
     from typing import override
-else:
-    try:
-        from typing import override
-    except ImportError:  # Python < 3.12: a no-op stand-in
-        _F = TypeVar("_F")
+else:  # Python < 3.12: a no-op stand-in
+    _F = TypeVar("_F")
 
-        def override(func: _F) -> _F:
-            """Mark a method as overriding one in a base class."""
-            return func
+    def override(func: _F) -> _F:
+        """Mark a method as overriding one in a base class."""
+        return func
 
 
 LOG = os.environ.get("MOCK_LOG", "/tmp/nexus_publish_requests.log")
