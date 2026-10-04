@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Tool configuration only. This repository is a GitHub Action, not a
+# Python package: there is no [project] table, and nothing builds or
+# installs it.
+
+[tool.basedpyright]
+# A floor, not a pin: the oldest Python the type check assumes, the
+# system python3 of ubuntu-24.04. The workflows run the mock with the
+# runner's python3 and no setup-python; newer images only raise it.
+pythonVersion = "3.12"
+pythonPlatform = "All"
+# basedpyright's own default, which the bare hook applied before;
+# stricter than the organisation's "standard" baseline.
+typeCheckingMode = "recommended"
+# The directories the pre-commit hook passes as explicit targets.
+# Explicit arguments override include, so this governs the runs that
+# name no targets, a bare basedpyright and an editor's language
+# server, which then analyse the same set the hook does.
+include = ["tests"]
+# Version-gated fallbacks for older Pythons are unreachable at 3.12
+reportUnreachable = false
