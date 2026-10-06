@@ -73,7 +73,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ```yaml
 - name: Upload Raw Files
-  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
+  uses: lfreleng-actions/nexus-publish-action@0b1f7998b05f3667c64648b86f620b3daff8370c # v1.3.0
   with:
     nexus_server: "https://nexus.example.com"
     nexus_username: "admin"
@@ -89,7 +89,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ```yaml
 - name: Upload Maven Artifacts
-  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
+  uses: lfreleng-actions/nexus-publish-action@0b1f7998b05f3667c64648b86f620b3daff8370c # v1.3.0
   with:
     nexus_server: "https://nexus.example.com"
     nexus_password: ${{ secrets.NEXUS_PASSWORD }}
@@ -103,7 +103,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ```yaml
 - name: Upload Helm Charts
-  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
+  uses: lfreleng-actions/nexus-publish-action@0b1f7998b05f3667c64648b86f620b3daff8370c # v1.3.0
   with:
     nexus_server: "https://nexus.example.com"
     nexus_password: ${{ secrets.NEXUS_PASSWORD }}
@@ -117,7 +117,7 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ```yaml
 - name: Upload Maven m2repo to Nexus 2.x
-  uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
+  uses: lfreleng-actions/nexus-publish-action@0b1f7998b05f3667c64648b86f620b3daff8370c # v1.3.0
   with:
     nexus_server: "https://nexus.example.com"
     nexus_username: ${{ secrets.NEXUS_USERNAME }}
@@ -130,14 +130,13 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ### Maven m2repo Upload (Nexus 3.x)
 
-`nexus_version` and `dry_run` are newer than `v1.2.0`, so the next two
-examples cannot pin that release: it ignores unknown inputs with a warning,
-which would turn a dry run into a live upload. Replace `<commit-sha>` with the
-commit of the first release that has them.
+`nexus_version` and `dry_run` first shipped in `v1.3.0`. Pin that release or
+later for the next two examples: an older one ignores unknown inputs with a
+warning, which would turn a dry run into a live upload.
 
 ```yaml
 - name: Upload Maven m2repo to Nexus 3.x
-  uses: lfreleng-actions/nexus-publish-action@<commit-sha> # first release after v1.2.0
+  uses: lfreleng-actions/nexus-publish-action@0b1f7998b05f3667c64648b86f620b3daff8370c # v1.3.0
   with:
     nexus_server: "https://nexus3.example.com"
     nexus_username: ${{ secrets.NEXUS_USERNAME }}
@@ -152,7 +151,7 @@ commit of the first release that has them.
 
 ```yaml
 - name: Show what would upload, without contacting Nexus
-  uses: lfreleng-actions/nexus-publish-action@<commit-sha> # first release after v1.2.0
+  uses: lfreleng-actions/nexus-publish-action@0b1f7998b05f3667c64648b86f620b3daff8370c # v1.3.0
   with:
     nexus_server: "https://nexus.example.com"
     repository_format: "maven2_upload"
@@ -405,7 +404,7 @@ set `fail_fast: 'false'`:
 <!-- markdownlint-disable MD013 -->
 
 ```yaml
-- uses: lfreleng-actions/nexus-publish-action@6f4ae6cc12ff4cd6dd335f28cbd10c520dd4c7c0 # v1.1.3
+- uses: lfreleng-actions/nexus-publish-action@0b1f7998b05f3667c64648b86f620b3daff8370c # v1.3.0
   with:
     fail_fast: 'false'
     permit_fail: 'false'
