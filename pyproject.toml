@@ -19,5 +19,9 @@ typeCheckingMode = "recommended"
 # name no targets, a bare basedpyright and an editor's language
 # server, which then analyse the same set the hook does.
 include = ["tests"]
-# Version-gated fallbacks for older Pythons are unreachable at 3.12
-reportUnreachable = false
+
+[tool.mypy]
+# The pre-commit mypy hook otherwise targets whichever Python runs it,
+# and Python 3.11 has no typing.override. Pin the same target as the
+# basedpyright pythonVersion above.
+python_version = "3.12"
