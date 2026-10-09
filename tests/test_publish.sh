@@ -411,6 +411,49 @@ test_failed_metadata_holds_back_rest() {
   assert_log "Metadata held back (counted as failed): 2"
 }
 
+# Only maven-metadata.xml and its sidecars are metadata: artefacts of
+# an artifactId named maven-metadata.xml must upload before, and hold
+# back, the version-level metadata that advertises them
+test_metadata_artifact_id_is_artefact() {
+  local dir='org/example/maven-metadata.xml/1.0-SNAPSHOT'
+  local art='maven-metadata.xml-1.0-20261007.120000-1'
+  local -a metadata=("$dir/maven-metadata.xml")
+  local sidecar
+  for sidecar in md5 sha1 sha256 sha512 asc; do
+    metadata+=("$dir/maven-metadata.xml.$sidecar")
+  done
+  metadata+=("org/example/maven-metadata.xml/maven-metadata.xml")
+  make_m2repo "${metadata[@]}" \
+    "$dir/$art.jar" \
+    "$dir/$art.jar.asc" \
+    "$dir/$art.jar.sha1" \
+    "$dir/$art.pom"
+  start_mock "{\"$art.pom\": [403]}"
+  run_publish INPUT_FAIL_FAST=false
+  stop_mock
+
+  local base='/content/repositories/snapshots'
+  local expected path
+  expected=$(for path in \
+    "$dir/$art.jar" \
+    "$dir/$art.jar.asc" \
+    "$dir/$art.pom" \
+    "$dir/$art.jar.sha1"; do
+    echo "$base/$path"
+  done)
+
+  assert_eq 1 "$publish_exit" "exit status"
+  assert_eq "$expected" "$(uploaded_paths)" "upload order"
+  assert_log "Upload order: 3 artefacts, 1 checksums, then 7"
+  assert_eq 8 "$(output_value failed_count)" "failed_count"
+  # Whole lines: maven-metadata.xml is a prefix of its sidecars
+  for path in "${metadata[@]}"; do
+    if ! grep -qxF "   Held back: $work/m2repo/$path" "$work/out.log"; then
+      fail "not held back: $path"
+    fi
+  done
+}
+
 test_invalid_retry_inputs() {
   make_m2repo "$version_dir/$snapshot.jar"
   start_mock '{}'
@@ -488,6 +531,7 @@ run_test test_failed_artefact_withholds_metadata
 run_test test_holdback_without_fail_fast
 run_test test_holdback_with_permit_fail
 run_test test_failed_metadata_holds_back_rest
+run_test test_metadata_artifact_id_is_artefact
 run_test test_invalid_retry_inputs
 run_test test_retry_delay_is_decimal
 run_test test_action_passes_retry_inputs
