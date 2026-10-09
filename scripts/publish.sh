@@ -670,8 +670,16 @@ upload_file() {
 
 # --- maven2_upload ordering ---
 
+# Exact names only: an artifactId may itself start with
+# maven-metadata.xml, and its artefacts must not sort as metadata
 is_maven_metadata() {
-  [[ "${1##*/}" == maven-metadata.xml* ]]
+  case "${1##*/}" in
+    maven-metadata.xml | maven-metadata.xml.md5 | maven-metadata.xml.sha1 | \
+      maven-metadata.xml.sha256 | maven-metadata.xml.sha512 | \
+      maven-metadata.xml.asc)
+      return 0 ;;
+  esac
+  return 1
 }
 
 # Print the arguments NUL-separated in byte order. With "deepest" as
@@ -695,7 +703,7 @@ sort_paths() {
 
 # Reorder target_files so Nexus never advertises content that is not
 # there yet: artefacts (signatures travel with them), then checksums,
-# then maven-metadata.xml and its siblings last, deepest first so
+# then maven-metadata.xml and its sidecars last, deepest first so
 # version-level metadata lands before artifact-level metadata.
 order_maven2_upload_files() {
   local -a artefacts=() checksums=() metadata=() sorted=()

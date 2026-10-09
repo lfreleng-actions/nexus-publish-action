@@ -232,10 +232,12 @@ warning, which would turn a dry run into a live upload.
 - **Checksums**: Not double-uploaded (m2repo already contains `.md5`/`.sha1` files)
 - **Upload order**: Artefacts (with their `.asc` signatures), then checksum
   files (`.md5`, `.sha1`, `.sha256`, `.sha512`), then `maven-metadata.xml` and
-  its siblings last; each group sorts by path, and metadata sorts deepest
-  directory first
+  its `.md5`, `.sha1`, `.sha256`, `.sha512` and `.asc` sidecars last; each
+  group sorts by path, and metadata sorts deepest directory first. The action
+  matches those exact file names, so an artifactId that begins with
+  `maven-metadata.xml` keeps its artefacts in the artefact group
 - **Metadata hold-back**: If any artefact or checksum upload fails, the action
-  does not upload the `maven-metadata.xml*` files, so Nexus never advertises a
+  does not upload the metadata files, so Nexus never advertises a
   SNAPSHOT whose files are missing. A failed metadata file holds back the
   metadata after it too, so checksums never mismatch the copy still on the
   server. How the action reports the withheld files depends on the mode:
