@@ -11,7 +11,8 @@ Publishes content to Sonatype Nexus Repository servers.
 
 ## Features
 
-- **Universal Support**: Works with all major Nexus repository formats
+- **Broad Format Support**: Works with the major Nexus repository formats,
+  except Docker (see [Supported Repository Formats](#supported-repository-formats))
 - **Format-Aware Uploads**: Automatically handles format-specific upload paths
   and metadata
 - **Checksum Validation**: Optional MD5, SHA1, and SHA256 checksum generation
@@ -46,7 +47,6 @@ Publishes content to Sonatype Nexus Repository servers.
 | `maven2`        | Java artifacts          | `*.jar`, `*.war`, `*.pom`    |
 | `maven2_upload` | Maven m2repo trees      | Pre-built `m2repo/` dirs     |
 | `npm`           | Node.js packages        | `*.tgz`                      |
-| `docker`        | Container images        | N/A (registry API)           |
 | `helm`          | Kubernetes charts       | `*.tgz`                      |
 | `pypi`          | Python packages         | `*.whl`, `*.tar.gz`          |
 | `nuget`         | .NET packages           | `*.nupkg`                    |
@@ -64,6 +64,14 @@ Publishes content to Sonatype Nexus Repository servers.
 | `bower`         | Frontend packages       | `*.tar.gz`                   |
 
 <!-- markdownlint-enable MD013 -->
+
+The action does not publish container images. Nexus 3 Docker repositories
+take images through the Docker registry API, not the component upload API
+this action uses, so `repository_format: docker` fails at once. Build and
+push images with the
+[`lfreleng-actions/docker-workflows`](https://github.com/lfreleng-actions/docker-workflows)
+lanes, and promote them between repositories with
+[`lfreleng-actions/docker-promote-action`](https://github.com/lfreleng-actions/docker-promote-action).
 
 ## Usage Examples
 

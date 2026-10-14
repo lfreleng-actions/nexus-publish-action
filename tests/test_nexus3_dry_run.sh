@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Tests for scripts/publish.sh Nexus 3 maven2_upload paths and dry-run
-# mode. A curl shim placed first on PATH records every invocation, so the
-# tests need no server and can prove a dry run never calls curl.
+# Tests for scripts/publish.sh Nexus 3 maven2_upload paths, dry-run
+# mode and input validation. A curl shim placed first on PATH records
+# every invocation, so the tests need no server and can prove a dry run
+# never calls curl.
 # Requires bash 4.4+.
 #
 # Usage: bash tests/test_nexus3_dry_run.sh
@@ -315,6 +316,43 @@ test_action_validate_step() {
   fi
 }
 
+# Docker repositories need the registry API, so both the action's
+# validate step and publish.sh refuse the format and name the tools
+# that can publish images, before credentials or any request
+test_docker_format_rejected() {
+  local expected=(
+    "Error: repository_format 'docker' is not supported"
+    "registry API, not the component upload API"
+    "Use the lfreleng-actions/docker-workflows lanes or"
+    "lfreleng-actions/docker-promote-action instead"
+  )
+  local line
+  rm -rf "$work/raw"
+  mkdir -p "$work/raw"
+  echo 'raw content' > "$work/raw/file.txt"
+  run_publish INPUT_REPOSITORY_FORMAT=docker INPUT_FILES_PATH="$work/raw"
+  assert_eq 1 "$publish_exit" "exit status (publish.sh)"
+  for line in "${expected[@]}"; do
+    assert_log "$line"
+  done
+  assert_no_curl
+  assert_no_netrc
+
+  run_validate_step INPUT_REPOSITORY_FORMAT=docker
+  assert_eq 1 "$publish_exit" "exit status (validate step)"
+  for line in "${expected[@]}"; do
+    assert_log "$line"
+  done
+
+  # No longer offered as a supported format
+  run_validate_step INPUT_REPOSITORY_FORMAT=xyz
+  assert_eq 1 "$publish_exit" "exit status (unknown format)"
+  assert_log "Supported formats: raw maven2"
+  if grep -q '^Supported formats:.* docker' "$work/out.log"; then
+    fail "docker is still listed as a supported format"
+  fi
+}
+
 test_dry_run_lists_checksums() {
   rm -rf "$work/raw"
   mkdir -p "$work/raw"
@@ -397,6 +435,7 @@ run_test test_dry_run_reports_url_errors
 run_test test_dry_run_with_no_files
 run_test test_action_wiring
 run_test test_action_validate_step
+run_test test_docker_format_rejected
 
 if [ "$failures" -gt 0 ]; then
   echo "❌ $failures assertion(s) failed"

@@ -172,7 +172,16 @@ runs:
 
         # Validate repository format
         format="$INPUT_REPOSITORY_FORMAT"
-        valid_formats=("raw" "maven2" "maven2_upload" "npm" "docker" \
+        # Keep in step with the same check in scripts/publish.sh
+        if [ "$format" = "docker" ]; then
+          echo "Error: repository_format 'docker' is not supported ❌"
+          echo 'Nexus 3 Docker repositories take images through the' \
+            'registry API, not the component upload API'
+          echo 'Use the lfreleng-actions/docker-workflows lanes or' \
+            'lfreleng-actions/docker-promote-action instead'
+          exit 1
+        fi
+        valid_formats=("raw" "maven2" "maven2_upload" "npm" \
           "helm" "pypi" "nuget" "rubygems" "apt" "yum" "rpm" "composer" \
           "conan" "conda" "r" "go" "p2" "gitlfs" "cocoapods" "bower")
 

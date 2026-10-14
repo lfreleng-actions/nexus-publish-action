@@ -150,6 +150,18 @@ if [ "$nexus_version" != "2" ] && [ "$nexus_version" != "3" ]; then
   exit 1
 fi
 
+# Docker repositories take images through the registry API, which
+# this script does not speak; stop before credentials or uploads.
+# Keep in step with the same check in action.yaml.
+if [ "$repo_format" = "docker" ]; then
+  echo "Error: repository_format 'docker' is not supported ❌"
+  echo 'Nexus 3 Docker repositories take images through the' \
+    'registry API, not the component upload API'
+  echo 'Use the lfreleng-actions/docker-workflows lanes or' \
+    'lfreleng-actions/docker-promote-action instead'
+  exit 1
+fi
+
 # Assign credentials securely; a dry run never contacts the server
 if [ "$dry_run" != "true" ]; then
   assign_credentials
@@ -248,11 +260,6 @@ get_upload_url() {
       else
         echo "${nexus_url}/repository/${repo_name}/${filename}"
       fi
-      ;;
-    "docker")
-      echo 'Error: Docker format requires special handling'
-      echo '       with registry API'
-      return 1
       ;;
     *)
       local base_url
