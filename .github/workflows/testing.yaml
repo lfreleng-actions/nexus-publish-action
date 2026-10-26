@@ -56,7 +56,7 @@ jobs:
 
       - name: 'Run make'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/make-action@9317f1acd6218955c88665350c64d5620a86db81  # v0.1.5
+        uses: lfreleng-actions/make-action@de52c1e11a6d28df43421e3c9fa89493193dec7d  # v0.1.6
         with:
           repository: "${{ env.CHART_REPOSITORY }}"
           path: "${{ env.CHARTS_BUILD_DIR }}"
