@@ -34,6 +34,8 @@ Publishes content to Sonatype Nexus Repository servers.
   timeout, DNS, and SSL/TLS failures
 - **Nexus 2.x and 3.x m2repo Uploads**: `maven2_upload` supports both
   `/content/repositories/` and `/repository/` paths via `nexus_version`
+- **Nexus 2.x Unpack Uploads**: `unpack` sends a directory or `.zip` as one
+  archive that the Nexus Unpack plugin extracts, for Javadoc and site trees
 - **Dry Run**: Exercise file discovery and URL construction without any
   network requests or credentials
 
@@ -46,6 +48,7 @@ Publishes content to Sonatype Nexus Repository servers.
 | `raw`           | Generic binary files    | `*.zip`, `*.tar.gz`, `*.bin` |
 | `maven2`        | Java artifacts          | `*.jar`, `*.war`, `*.pom`    |
 | `maven2_upload` | Maven m2repo trees      | Pre-built `m2repo/` dirs     |
+| `unpack`        | Nexus 2.x Unpack plugin | Javadoc/site dirs, `*.zip`   |
 | `npm`           | Node.js packages        | `*.tgz`                      |
 | `helm`          | Kubernetes charts       | `*.tgz`                      |
 | `pypi`          | Python packages         | `*.whl`, `*.tar.gz`          |
@@ -155,6 +158,24 @@ warning, which would turn a dry run into a live upload.
     nexus_version: "3"
 ```
 
+### Javadoc Upload (Nexus 2.x Unpack Plugin)
+
+`v1.3.3` and earlier reject `repository_format: unpack` at input validation;
+pin a release that includes it.
+
+```yaml
+- name: Publish Javadoc to Nexus 2.x
+  uses: lfreleng-actions/nexus-publish-action@<commit-sha> # <release>
+  with:
+    nexus_server: "https://nexus.example.com"
+    nexus_username: ${{ secrets.NEXUS_USERNAME }}
+    nexus_password: ${{ secrets.NEXUS_PASSWORD }}
+    repository_format: "unpack"
+    repository_name: "javadoc"
+    files_path: "${{ github.workspace }}/target/site/apidocs"
+    upload_path: "org.example.project/main"
+```
+
 ### Dry-Run Self-Test
 
 ```yaml
@@ -198,7 +219,7 @@ warning, which would turn a dry run into a live upload.
 | `coordinates`       | Artifact coordinates (format-specific)                 | `""`             |
 | `metadata`          | Metadata as JSON string                                | `"{}"`           |
 | `validate_checksum` | Generate and upload checksums                          | `true`           |
-| `nexus_version`     | Nexus major version for `maven2_upload`: `2` or `3`    | `2`              |
+| `nexus_version`     | `maven2_upload`: `2` or `3`; `unpack` needs `2`        | `2`              |
 | `dry_run`           | `true` logs planned uploads and sends nothing          | `false`          |
 | `permit_fail`       | Do not exit/error when some content fails to upload    | `false`          |
 | `fail_fast`         | Stop on first failure (when `permit_fail` is `false`)  | `true`           |
@@ -257,6 +278,29 @@ warning, which would turn a dry run into a live upload.
     counts each held-back file in `failed_count` and `failed_files`
 - **Note**: `files_path` must be a directory, not a single file
 
+### Unpack
+
+- **Use case**: Publish a Javadoc or site tree to a Nexus 2.x hosted
+  repository that has the Nexus Unpack plugin, replacing
+  `lftools deploy nexus-zip`
+- **API endpoint**: `PUT` to
+  `<server>/service/local/repositories/<repo>/content-compressed/<upload_path>`
+  with `Content-Type: application/zip`; Nexus extracts the archive under
+  `upload_path`
+- **`files_path`**: A directory, which the action zips with entries relative
+  to it, or a ready-made `.zip` file. The action refuses a directory holding
+  symbolic links, since `zip` would follow them out of the tree
+- **`upload_path`**: Required, so an archive never unpacks over the
+  repository root. Allowed characters are letters, digits, `.`, `_`, `~`, `-`
+  and `/`, with no empty, `.` or `..` segments
+- **`TMPDIR`**: Must sit outside `files_path`, so the archive cannot pick up
+  the action's credential or temp files
+- **`file_pattern`**: Must stay `*`; the whole directory goes up as one archive
+- **`nexus_version`**: Must be `2`; Nexus 3 has no Unpack plugin
+- **Checksums**: None uploaded; outputs count the one archive
+- **Permissions**: The Nexus user needs the Unpack plugin's upload privilege
+  on the repository
+
 ### npm
 
 - **Upload path**: Automatically determined from package name
@@ -280,7 +324,8 @@ warning, which would turn a dry run into a live upload.
 `nexus_version` selects the URL layout for `maven2_upload`: `2` (default)
 uses `<server>/content/repositories/<repo>/<path>` and `3` uses
 `<server>/repository/<repo>/<path>`. All other formats already use Nexus 3.x
-`/repository/` endpoints and ignore this input. Any other value, including an
+`/repository/` endpoints and ignore this input, except `unpack`, which
+accepts `2` alone. Any other value, including an
 empty one, stops the action with an error before it sets up credentials;
 omit the input to get the default.
 
@@ -446,7 +491,8 @@ The action provides comprehensive logging including:
 
 1. Validates inputs and repository format
 2. Discovers files based on path and pattern; `maven2_upload` orders them
-   artefacts, checksums, then metadata
+   artefacts, checksums, then metadata, and `unpack` zips a directory into
+   one archive
 3. Determines format-specific upload URLs and methods
 4. Uploads files with Nexus-aware error handling:
    - Captures full HTTP response bodies for diagnostics

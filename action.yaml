@@ -58,7 +58,7 @@ inputs:
     required: false
     default: 'true'
   nexus_version:
-    # Other formats always use Nexus 3.x /repository/ paths
+    # unpack needs 2; other formats always use Nexus 3.x /repository/
     description: 'Nexus major version for maven2_upload paths: 2 or 3'
     required: false
     default: '2'
@@ -181,7 +181,7 @@ runs:
             'lfreleng-actions/docker-promote-action instead'
           exit 1
         fi
-        valid_formats=("raw" "maven2" "maven2_upload" "npm" \
+        valid_formats=("raw" "maven2" "maven2_upload" "unpack" "npm" \
           "helm" "pypi" "nuget" "rubygems" "apt" "yum" "rpm" "composer" \
           "conan" "conda" "r" "go" "p2" "gitlfs" "cocoapods" "bower")
 
