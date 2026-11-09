@@ -80,6 +80,10 @@ cleanup_credentials() {
   if [ -n "${netrc_file:-}" ] && [ -f "$netrc_file" ]; then
     rm -f "$netrc_file"
   fi
+  # unpack: archive built from a files_path directory
+  if [ -n "${unpack_dir:-}" ]; then
+    rm -rf "$unpack_dir"
+  fi
 }
 
 trap cleanup_credentials EXIT
@@ -144,10 +148,45 @@ if [ "$dry_run" != "true" ] && [ "$dry_run" != "false" ]; then
   exit 1
 fi
 
-# Only maven2_upload varies by version; other formats use Nexus 3 paths
+# maven2_upload paths vary by version and unpack needs 2; other
+# formats use Nexus 3 paths
 if [ "$nexus_version" != "2" ] && [ "$nexus_version" != "3" ]; then
   echo "Error: nexus_version must be '2' or '3', not '$nexus_version' ❌"
   exit 1
+fi
+
+# unpack posts one zip to the Nexus 2 Unpack plugin, which extracts it
+# under upload_path; an empty path would unpack over the repository root.
+# Plain characters only, no empty, '.' or '..' segments: curl collapses
+# dot segments and treats '?' and '#' as URL delimiters, either of which
+# could land the archive at the root.
+if [ "$repo_format" = "unpack" ]; then
+  if [ "$nexus_version" != "2" ]; then
+    echo "Error: unpack needs Nexus 2 (the Unpack plugin)," \
+      "not nexus_version '$nexus_version' ❌"
+    exit 1
+  fi
+  unpack_path=$(printf '%s' "$upload_path" | sed 's|^/*||; s|/*$||')
+  if [ -z "$unpack_path" ]; then
+    echo 'Error: unpack requires upload_path, the directory the' \
+      'archive unpacks into ❌'
+    exit 1
+  fi
+  unpack_chars='^[A-Za-z0-9._~/-]+$'
+  unpack_dots='/\.\.?/'
+  if [[ ! "$unpack_path" =~ $unpack_chars ]] ||
+    [[ "/$unpack_path/" == *//* ]] ||
+    [[ "/$unpack_path/" =~ $unpack_dots ]]; then
+    echo "Error: unpack upload_path '$upload_path' must use letters," \
+      "digits, '.', '_', '~', '-' and '/', with no empty, '.' or" \
+      "'..' segments ❌"
+    exit 1
+  fi
+  if [ "$file_pattern" != "*" ]; then
+    echo "Error: unpack publishes the whole files_path; file_pattern" \
+      "must be '*', not '$file_pattern' ❌"
+    exit 1
+  fi
 fi
 
 # Docker repositories take images through the registry API, which
@@ -186,6 +225,10 @@ get_upload_url() {
   local upload_path="$4"
 
   case "$format" in
+    "unpack")
+      local base="${nexus_url}/service/local/repositories/${repo_name}"
+      echo "${base}/content-compressed/${unpack_path}"
+      ;;
     "maven2_upload")
       if [ -z "$upload_path" ]; then
         echo "Error: maven2_upload requires upload_path" >&2
@@ -437,6 +480,9 @@ perform_secure_upload() {
       "npm")
         secure_upload_file "$file" "$upload_url" \
           "application/x-compressed"
+        ;;
+      "unpack")
+        secure_upload_file "$file" "$upload_url" "application/zip"
         ;;
       "pypi")
         secure_upload_pypi "$file" "$upload_url"
@@ -742,6 +788,54 @@ order_maven2_upload_files() {
 # top of the script (before assign_credentials) so that a failure
 # during credential setup cannot leak the temp .netrc file.
 
+# --- unpack archive ---
+
+# Zip the files_path directory, entries relative to it, into a temp
+# directory that cleanup_credentials removes on exit. Symbolic links
+# are refused: zip follows them, which could publish content from
+# outside files_path. So is a TMPDIR inside files_path, which would
+# put the .netrc and the archive itself into the published tree.
+# An empty directory leaves target_files empty.
+build_unpack_archive() {
+  if [ -n "$(find "$files_path" -type l -print -quit)" ]; then
+    echo 'Error: unpack refuses symbolic links under files_path ❌'
+    find "$files_path" -type l -printf '   %p\n' | head -n 10
+    exit 1
+  fi
+  if [ -z "$(find "$files_path" -type f -print -quit)" ]; then
+    return 0
+  fi
+  if ! command -v zip > /dev/null 2>&1; then
+    echo 'Error: unpack needs the zip command to archive a directory ❌'
+    exit 1
+  fi
+  local name
+  name=$(basename "$(cd "$files_path" && pwd)")
+  if [ "$name" = "/" ]; then
+    name="archive"
+  fi
+  unpack_dir=$(mktemp -d)
+  # Absolute, since zip resolves the archive path after cd files_path
+  local root own archive_dir
+  root=$(realpath "$files_path")
+  archive_dir=$(realpath "$unpack_dir")
+  for own in "$archive_dir" ${netrc_file:+"$netrc_file"}; do
+    if [[ "$(realpath "$own")/" == "$root"/* ]]; then
+      echo 'Error: unpack needs TMPDIR outside files_path, or the' \
+        'archive would include action temp files ❌'
+      exit 1
+    fi
+  done
+  local archive="${archive_dir}/${name}.zip"
+  if ! (cd "$files_path" && zip -q -r -X "$archive" .); then
+    echo "Error: could not archive $files_path ❌"
+    exit 1
+  fi
+  echo "Archived $files_path as ${name}.zip" \
+    "($(wc -c < "$archive") bytes)"
+  target_files=("$archive")
+}
+
 # Prepare upload path
 if [ -n "$upload_path" ]; then
   upload_path=$(echo "$upload_path" | sed 's|^/||; s|/$||')
@@ -762,7 +856,8 @@ echo '📋 Configuration:'
 echo "   Server: $nexus_url"
 echo "   Repository: $repo_name"
 echo "   Format: $repo_format"
-if [ "$repo_format" = "maven2_upload" ]; then
+if [ "$repo_format" = "maven2_upload" ] || \
+   [ "$repo_format" = "unpack" ]; then
   echo "   Nexus version: $nexus_version"
 fi
 if [ "$dry_run" = "true" ]; then
@@ -789,7 +884,14 @@ if [ -f "$files_path" ]; then
       'a directory, not a single file ❌'
     exit 1
   fi
+  if [ "$repo_format" = "unpack" ] && [[ "$files_path" != *.zip ]]; then
+    echo 'Error: unpack requires files_path to be a directory' \
+      'or a .zip file ❌'
+    exit 1
+  fi
   target_files=("$files_path")
+elif [ -d "$files_path" ] && [ "$repo_format" = "unpack" ]; then
+  build_unpack_archive
 elif [ -d "$files_path" ]; then
   if [ "$file_pattern" = "*" ]; then
     readarray -d '' target_files < <(find "$files_path" \

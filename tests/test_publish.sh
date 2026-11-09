@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Tests for scripts/publish.sh retry handling and maven2_upload upload
-# ordering, run against the mock Nexus in tests/mock_nexus.py.
-# Requires bash 4.4+, curl, python3 and md5sum/sha1sum/sha256sum.
+# Tests for scripts/publish.sh retry handling, maven2_upload upload
+# ordering and unpack archives, run against the mock Nexus in
+# tests/mock_nexus.py. Requires bash 4.4+, curl, python3, zip, unzip
+# and md5sum/sha1sum/sha256sum.
 #
 # Usage: bash tests/test_publish.sh
 
@@ -40,8 +41,9 @@ trap cleanup EXIT
 
 # Start the mock with a MOCK_RESPONSES JSON document
 start_mock() {
-  rm -f "$work/port" "$work/requests.log"
+  rm -f "$work/port" "$work/requests.log" "$work/body"
   MOCK_RESPONSES="$1" \
+    MOCK_BODY="$work/body" \
     MOCK_LOG="$work/requests.log" \
     MOCK_PORT_FILE="$work/port" \
     python3 "$repo_root/tests/mock_nexus.py" &
@@ -506,6 +508,118 @@ test_action_passes_retry_inputs() {
   done
 }
 
+# --- unpack ---
+
+unpack_url='/service/local/repositories/javadoc/content-compressed'
+
+make_apidocs() {
+  rm -rf "$work/apidocs"
+  mkdir -p "$work/apidocs/org/example"
+  printf '<html></html>\n' > "$work/apidocs/index.html"
+  printf 'class\n' > "$work/apidocs/org/example/Demo.html"
+}
+
+run_unpack() {
+  run_publish INPUT_REPOSITORY_NAME=javadoc \
+    INPUT_REPOSITORY_FORMAT=unpack \
+    INPUT_FILES_PATH="$work/apidocs" \
+    INPUT_UPLOAD_PATH='/org.example.demo/manganese/' "$@"
+}
+
+test_unpack_directory() {
+  make_apidocs
+  start_mock '{}'
+  run_unpack
+  stop_mock
+
+  assert_eq 0 "$publish_exit" "exit status"
+  assert_eq "PUT $unpack_url/org.example.demo/manganese type=application/zip auth=yes" \
+    "$(cat "$work/requests.log")" "request"
+  assert_eq "index.html org/example/Demo.html" \
+    "$(unzip -Z1 "$work/body" | grep -v '/$' | LC_ALL=C sort | xargs)" \
+    "archive entries"
+  assert_eq "apidocs.zip" "$(output_value published_files)" \
+    "published_files"
+  assert_eq 1 "$(output_value publication_count)" "publication_count"
+}
+
+test_unpack_relative_paths() {
+  make_apidocs
+  mkdir -p "$work/rel-tmp"
+  start_mock '{}'
+  pushd "$work" > /dev/null
+  run_unpack TMPDIR=rel-tmp INPUT_FILES_PATH=apidocs
+  popd > /dev/null
+  stop_mock
+
+  assert_eq 0 "$publish_exit" "exit status"
+  assert_eq 1 "$(request_count PUT)" "requests"
+  assert_eq "index.html org/example/Demo.html" \
+    "$(unzip -Z1 "$work/body" | grep -v '/$' | LC_ALL=C sort | xargs)" \
+    "archive entries"
+}
+
+test_unpack_zip_file() {
+  make_apidocs
+  (cd "$work/apidocs" && zip -q -r "$work/site.zip" .)
+  start_mock '{}'
+  run_unpack INPUT_FILES_PATH="$work/site.zip"
+  stop_mock
+
+  assert_eq 0 "$publish_exit" "exit status"
+  assert_eq 1 "$(request_count "$unpack_url/org.example.demo/manganese ")" \
+    "requests"
+  if ! cmp -s "$work/site.zip" "$work/body"; then
+    fail "uploaded body differs from the zip file"
+  fi
+}
+
+test_unpack_dry_run() {
+  make_apidocs
+  start_mock '{}'
+  run_unpack INPUT_DRY_RUN=true INPUT_NEXUS_PASSWORD=''
+  stop_mock
+
+  assert_eq 0 "$publish_exit" "exit status"
+  assert_eq 0 "$(request_count PUT)" "requests"
+  assert_eq 1 "$(output_value dry_run_count)" "dry_run_count"
+  assert_log "URL: http://127.0.0.1:${mock_port}$unpack_url/org.example.demo/manganese"
+}
+
+# Each misuse fails before any request is sent
+test_unpack_rejects_misuse() {
+  make_apidocs
+  mkdir "$work/apidocs/.scratch"
+  printf 'x\n' > "$work/site.tar.gz"
+  start_mock '{}'
+  local case arg
+  for case in 'INPUT_NEXUS_VERSION=3|unpack needs Nexus 2' \
+    'INPUT_UPLOAD_PATH=/|unpack requires upload_path' \
+    "INPUT_FILES_PATH=$work/site.tar.gz|directory or a .zip file" \
+    "INPUT_FILE_PATTERN=*.html|file_pattern must be '*'" \
+    'INPUT_UPLOAD_PATH=.|with no empty' \
+    'INPUT_UPLOAD_PATH=/docs/..|with no empty' \
+    'INPUT_UPLOAD_PATH=org/./demo|with no empty' \
+    'INPUT_UPLOAD_PATH=org//demo|with no empty' \
+    'INPUT_UPLOAD_PATH=#docs|with no empty' \
+    'INPUT_UPLOAD_PATH=docs?x=1|with no empty' \
+    "TMPDIR=$work/apidocs/.scratch|TMPDIR outside files_path"; do
+    arg="${case%%|*}"
+    run_unpack "$arg"
+    assert_eq 1 "$publish_exit" "exit status ($arg)"
+    assert_log "${case#*|}"
+  done
+  if [ -n "$(find "$work/apidocs" -name 'tmp.*' -print -quit)" ]; then
+    fail "temp files left under files_path"
+  fi
+  ln -s /etc/hostname "$work/apidocs/leak.html"
+  run_unpack
+  assert_eq 1 "$publish_exit" "exit status (symlink)"
+  assert_log "unpack refuses symbolic links"
+  stop_mock
+  assert_eq 0 "$(request_count PUT)" "requests"
+}
+
 run_test() {
   current_test="$1"
   local before="$failures"
@@ -535,6 +649,11 @@ run_test test_metadata_artifact_id_is_artefact
 run_test test_invalid_retry_inputs
 run_test test_retry_delay_is_decimal
 run_test test_action_passes_retry_inputs
+run_test test_unpack_directory
+run_test test_unpack_relative_paths
+run_test test_unpack_zip_file
+run_test test_unpack_dry_run
+run_test test_unpack_rejects_misuse
 
 if [ "$failures" -gt 0 ]; then
   echo "❌ $failures assertion(s) failed"

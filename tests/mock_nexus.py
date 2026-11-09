@@ -6,10 +6,11 @@
 Accepts ``PUT`` and ``POST`` uploads on any path and appends one line per
 request, in arrival order, to the file named by ``MOCK_LOG``::
 
-    PUT /content/repositories/snapshots/org/example/a.jar auth=yes
+    PUT /content/repositories/snapshots/org/example/a.jar type=- auth=yes
 
-``auth`` records whether an ``Authorization`` header arrived; the header
-value itself is never logged.
+``type`` is the ``Content-Type`` header, ``-`` when absent; ``auth`` records whether an ``Authorization`` header arrived; the header
+value itself is never logged. When ``MOCK_BODY`` names a file, each
+request body overwrites it, so a test can inspect the last upload.
 
 ``MOCK_RESPONSES`` holds a JSON object mapping a path suffix to a list of
 responses served on successive requests for a matching path. The final
@@ -45,6 +46,7 @@ else:
 
 LOG = os.environ.get("MOCK_LOG", "/tmp/nexus_publish_requests.log")
 PORT_FILE = os.environ.get("MOCK_PORT_FILE", "/tmp/nexus_publish_mock.port")
+BODY = os.environ.get("MOCK_BODY", "")
 RESPONSES = cast(
     "dict[str, list[int | str]]",
     json.loads(os.environ.get("MOCK_RESPONSES", "{}")),
@@ -74,10 +76,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_upload(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
-        if length:
-            _ = self.rfile.read(length)
+        body = self.rfile.read(length) if length else b""
+        if BODY:
+            with open(BODY, "wb") as handle:
+                _ = handle.write(body)
+        ctype = self.headers.get("Content-Type") or "-"
         auth = "yes" if self.headers.get("Authorization") else "no"
-        _log(f"{self.command} {self.path} auth={auth}")
+        _log(f"{self.command} {self.path} type={ctype} auth={auth}")
 
         response = _next_response(self.path)
         if response == "drop":
