@@ -289,10 +289,21 @@ pin a release that includes it.
   `upload_path`
 - **`files_path`**: A directory, which the action zips with entries relative
   to it, or a ready-made `.zip` file. The action refuses a directory holding
-  symbolic links, since `zip` would follow them out of the tree
+  symbolic links, since `zip` would follow them out of the tree. Using
+  `python3`, it reads the stored entry names as UTF-8, as Nexus does, ignoring
+  Unicode path aliases. It refuses archives without a file entry, since Nexus
+  skips directory entries, and entries that could land outside `upload_path`:
+  absolute names, backslashes, NUL bytes or `..` segments. It also refuses
+  ambiguous archives that another zip parser could read differently: data
+  before the first entry or after the end record, duplicate names, and names
+  that aren't valid UTF-8, which Nexus can't open. The
+  action then uploads a fresh zip holding the checked file entries, never the
+  original bytes, so Nexus extracts what the action checked
 - **`upload_path`**: Required, so an archive never unpacks over the
   repository root. Allowed characters are letters, digits, `.`, `_`, `~`, `-`
-  and `/`, with no empty, `.` or `..` segments
+  and `/`, with no empty, `.` or `..` segments. It must not end in `.md5` or
+  `.sha1` (any case): Nexus takes those for checksum uploads and discards the
+  archive while reporting success
 - **`TMPDIR`**: Must sit outside `files_path`, so the archive cannot pick up
   the action's credential or temp files
 - **`file_pattern`**: Must stay `*`; the whole directory goes up as one archive

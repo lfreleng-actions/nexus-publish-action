@@ -569,8 +569,21 @@ test_unpack_zip_file() {
   assert_eq 0 "$publish_exit" "exit status"
   assert_eq 1 "$(request_count "$unpack_url/org.example.demo/manganese ")" \
     "requests"
-  if ! cmp -s "$work/site.zip" "$work/body"; then
-    fail "uploaded body differs from the zip file"
+  # The action uploads a rebuilt archive with the same file entries
+  if ! python3 - "$work/site.zip" "$work/body" <<'PY'; then
+import sys
+from zipfile import ZipFile
+
+
+def files(path):
+    with ZipFile(path) as archive:
+        return {i.filename: archive.read(i) for i in archive.infolist()
+                if not i.is_dir()}
+
+
+sys.exit(files(sys.argv[1]) != files(sys.argv[2]))
+PY
+    fail "uploaded file entries differ from the zip file"
   fi
 }
 
@@ -584,6 +597,208 @@ test_unpack_dry_run() {
   assert_eq 0 "$(request_count PUT)" "requests"
   assert_eq 1 "$(output_value dry_run_count)" "dry_run_count"
   assert_log "URL: http://127.0.0.1:${mock_port}$unpack_url/org.example.demo/manganese"
+}
+
+# Nexus ignores archives sent to a .md5 or .sha1 destination (#211)
+test_unpack_checksum_destinations() {
+  make_apidocs
+  start_mock '{}'
+  local dest mode
+  for dest in docs/release.sha1 docs/release.md5 docs/release.SHA1 \
+    docs/release.Md5 /docs/release.sha1/; do
+    for mode in false true; do
+      run_unpack INPUT_UPLOAD_PATH="$dest" INPUT_DRY_RUN="$mode"
+      assert_eq 1 "$publish_exit" "exit status ($dest, dry_run $mode)"
+      assert_log "must not end in '.md5' or '.sha1'"
+    done
+  done
+  assert_eq 0 "$(request_count PUT)" "requests"
+
+  run_unpack INPUT_UPLOAD_PATH=docs/release.sha1/site
+  stop_mock
+  assert_eq 0 "$publish_exit" "exit status (checksum-like parent)"
+  assert_eq "$unpack_url/docs/release.sha1/site" "$(uploaded_paths)" \
+    "request path"
+}
+
+# Write a zip whose entries are the given names, each holding "x"
+make_zip() {
+  python3 - "$@" <<'PY'
+import sys
+from zipfile import ZipFile
+
+with ZipFile(sys.argv[1], "w") as archive:
+    for name in sys.argv[2:]:
+        archive.writestr(name, "x")
+PY
+}
+
+# Write a zip holding ../outside.html whose Unicode path extra field
+# (0x7075) aliases it as index.html, which Java's ZipFile ignores
+make_alias_zip() {
+  python3 - "$1" <<'PY'
+import struct
+import sys
+import zlib
+from zipfile import ZipFile, ZipInfo
+
+raw, alias = b"../outside.html", b"index.html"
+field = struct.pack("<BI", 1, zlib.crc32(raw)) + alias
+info = ZipInfo(raw.decode())
+info.extra = struct.pack("<HH", 0x7075, len(field)) + field
+with ZipFile(sys.argv[1], "w") as archive:
+    archive.writestr(info, "x")
+PY
+}
+
+# Write a zip holding one entry whose stored name is the escaped bytes
+# in $2, with the UTF-8 flag clear; Python's writer can't store a NUL
+# and always flags non-ASCII names, so this patches an ASCII stand-in
+make_raw_zip() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+from zipfile import ZipFile
+
+raw = sys.argv[2].encode().decode("unicode_escape").encode("latin-1")
+stand_in = b"A" * len(raw)
+with ZipFile(sys.argv[1], "w") as archive:
+    archive.writestr(stand_in.decode(), "x")
+with open(sys.argv[1], "rb") as handle:
+    data = handle.read()
+with open(sys.argv[1], "wb") as handle:
+    handle.write(data.replace(stand_in, raw))
+PY
+}
+
+# Write two concatenated zips: ../../outside.html, then index.html
+# with its central directory offset zeroed and one trailing byte.
+# Python lists index.html; Java's ZipFile rejects that end record and
+# falls back to the first, reading ../../outside.html
+make_ambiguous_zip() {
+  python3 - "$1" <<'PY'
+import io
+import struct
+import sys
+from zipfile import ZipFile
+
+
+def one(name):
+    data = io.BytesIO()
+    with ZipFile(data, "w") as archive:
+        archive.writestr(name, "x")
+    return data.getvalue()
+
+
+benign = bytearray(one("index.html"))
+struct.pack_into("<I", benign, benign.rfind(b"PK\x05\x06") + 16, 0)
+with open(sys.argv[1], "wb") as handle:
+    handle.write(one("../../outside.html") + benign + b"X")
+PY
+}
+
+# Prebuilt zip entries must stay under upload_path (#212)
+test_unpack_zip_entry_escape() {
+  local entry mode
+  start_mock '{}'
+  for entry in '../outside.html' '../../outside.html' 'docs/../../x.html' \
+    '/outside.html' 'docs\..\..\x.html'; do
+    make_zip "$work/bad.zip" 'index.html' "$entry"
+    for mode in false true; do
+      run_unpack INPUT_FILES_PATH="$work/bad.zip" INPUT_DRY_RUN="$mode"
+      assert_eq 1 "$publish_exit" "exit status ($entry, dry_run $mode)"
+      assert_log "would escape upload_path"
+      assert_log "   $entry"
+    done
+  done
+  make_alias_zip "$work/bad.zip"
+  for mode in false true; do
+    run_unpack INPUT_FILES_PATH="$work/bad.zip" INPUT_DRY_RUN="$mode"
+    assert_eq 1 "$publish_exit" "exit status (Unicode alias, dry_run $mode)"
+    assert_log "   ../outside.html"
+  done
+  # unzip lists this as index.html; Java keeps the whole stored name
+  make_raw_zip "$work/bad.zip" 'index.html\0/../../x.html'
+  for mode in false true; do
+    run_unpack INPUT_FILES_PATH="$work/bad.zip" INPUT_DRY_RUN="$mode"
+    assert_eq 1 "$publish_exit" "exit status (NUL name, dry_run $mode)"
+    assert_log '   index.html\x00/../../x.html'
+  done
+  # Java can't open a zip whose unflagged names aren't UTF-8
+  make_raw_zip "$work/bad.zip" '\x82t\x82.html'
+  for mode in false true; do
+    run_unpack INPUT_FILES_PATH="$work/bad.zip" INPUT_DRY_RUN="$mode"
+    assert_eq 1 "$publish_exit" "exit status (not UTF-8, dry_run $mode)"
+    assert_log '   \x82t\x82.html (not UTF-8)'
+  done
+  make_ambiguous_zip "$work/bad.zip"
+  for mode in false true; do
+    run_unpack INPUT_FILES_PATH="$work/bad.zip" INPUT_DRY_RUN="$mode"
+    assert_eq 1 "$publish_exit" "exit status (ambiguous, dry_run $mode)"
+    assert_log "it is ambiguous"
+  done
+  make_zip "$work/bad.zip" 'index.html' 'index.html'
+  for mode in false true; do
+    run_unpack INPUT_FILES_PATH="$work/bad.zip" INPUT_DRY_RUN="$mode"
+    assert_eq 1 "$publish_exit" "exit status (duplicate, dry_run $mode)"
+    assert_log "   index.html (duplicate)"
+  done
+  # unzip would glob site[1].zip to the harmless site1.zip
+  make_zip "$work/site[1].zip" '../outside.html'
+  make_zip "$work/site1.zip" 'index.html'
+  for mode in false true; do
+    run_unpack INPUT_FILES_PATH="$work/site[1].zip" INPUT_DRY_RUN="$mode"
+    assert_eq 1 "$publish_exit" "exit status (wildcard name, dry_run $mode)"
+    assert_log "   ../outside.html"
+  done
+  make_zip "$work/bad.zip"
+  run_unpack INPUT_FILES_PATH="$work/bad.zip"
+  assert_eq 1 "$publish_exit" "exit status (empty zip)"
+  assert_log "holds directories alone or is not a zip archive"
+  # Nexus skips directory entries, so this would publish nothing
+  make_zip "$work/bad.zip" 'docs/' 'docs/site/'
+  for mode in false true; do
+    run_unpack INPUT_FILES_PATH="$work/bad.zip" INPUT_DRY_RUN="$mode"
+    assert_eq 1 "$publish_exit" "exit status (directories alone, dry_run $mode)"
+    assert_log "holds directories alone or is not a zip archive"
+  done
+  printf 'not a zip\n' > "$work/bad.zip"
+  run_unpack INPUT_FILES_PATH="$work/bad.zip"
+  assert_eq 1 "$publish_exit" "exit status (not a zip)"
+  assert_log "holds directories alone or is not a zip archive"
+  assert_eq 0 "$(request_count PUT)" "requests"
+
+  # The upload is a rebuilt zip of the file entries, without the comment
+  make_zip "$work/ok.zip" 'index.html' '..notes/a..b.html' 'org/' \
+    'org/x/Y.html'
+  printf 'comment' | python3 -c 'import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "a") as a: a.comment = sys.stdin.buffer.read()' \
+    "$work/ok.zip"
+  run_unpack INPUT_FILES_PATH="$work/ok.zip"
+  assert_eq 0 "$publish_exit" "exit status (dotted names)"
+  assert_eq 1 "$(request_count PUT)" "requests (dotted names)"
+  assert_eq "..notes/a..b.html index.html org/x/Y.html" \
+    "$(unzip -Z1 "$work/body" | LC_ALL=C sort | xargs)" \
+    "uploaded entries (dotted names)"
+  assert_eq "" "$(unzip -z "$work/body" | tail -n +2)" \
+    "uploaded comment (dotted names)"
+
+  # Java reads an unflagged name as UTF-8, so the upload keeps été.html
+  make_raw_zip "$work/ok.zip" '\xc3\xa9t\xc3\xa9.html'
+  run_unpack INPUT_FILES_PATH="$work/ok.zip"
+  assert_eq 0 "$publish_exit" "exit status (unflagged UTF-8)"
+  assert_eq "['été.html']" "$(python3 -c 'import sys, zipfile
+print(zipfile.ZipFile(sys.argv[1]).namelist())' "$work/body")" \
+    "uploaded entries (unflagged UTF-8)"
+
+  # A directory named with glob characters archives to api[1].zip
+  make_apidocs
+  mkdir -p "$work/api[1]" "$work/api1"
+  cp -R "$work/apidocs/." "$work/api[1]/"
+  run_unpack INPUT_FILES_PATH="$work/api[1]"
+  stop_mock
+  assert_eq 0 "$publish_exit" "exit status (glob directory name)"
+  assert_eq "api[1].zip" "$(output_value published_files)" \
+    "published_files (glob directory name)"
 }
 
 # Each misuse fails before any request is sent
@@ -654,6 +869,8 @@ run_test test_unpack_relative_paths
 run_test test_unpack_zip_file
 run_test test_unpack_dry_run
 run_test test_unpack_rejects_misuse
+run_test test_unpack_checksum_destinations
+run_test test_unpack_zip_entry_escape
 
 if [ "$failures" -gt 0 ]; then
   echo "❌ $failures assertion(s) failed"
