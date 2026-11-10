@@ -182,6 +182,15 @@ if [ "$repo_format" = "unpack" ]; then
       "'..' segments ❌"
     exit 1
   fi
+  # The Unpack plugin returns success without extracting when the
+  # destination ends in .md5 or .sha1 (any case), taking the request
+  # for a Maven checksum upload
+  if [[ "${unpack_path,,}" == *.md5 || "${unpack_path,,}" == *.sha1 ]]; then
+    echo "Error: unpack upload_path '$upload_path' must not end in" \
+      "'.md5' or '.sha1'; Nexus takes that for a checksum upload" \
+      "and discards the archive ❌"
+    exit 1
+  fi
   if [ "$file_pattern" != "*" ]; then
     echo "Error: unpack publishes the whole files_path; file_pattern" \
       "must be '*', not '$file_pattern' ❌"
@@ -392,7 +401,8 @@ secure_upload_file() {
   # response body is captured on HTTP errors (4xx/5xx).
   # The \n before %{http_code} ensures the status code starts on
   # its own line even when the response body lacks a trailing newline.
-  curl -s --max-redirs 0 -w '\n%{http_code}' \
+  # --globoff: curl otherwise expands [] and {} in --upload-file names.
+  curl -s --globoff --max-redirs 0 -w '\n%{http_code}' \
     --connect-timeout 30 --max-time 300 \
     --netrc-file "$netrc_file" \
     -H "Content-Type: $content_type" \
@@ -836,6 +846,126 @@ build_unpack_archive() {
   target_files=("$archive")
 }
 
+# The Unpack plugin stores each entry at <upload_path>/<entry name>
+# and the repository then collapses '..', so an entry such as
+# ../../x.html would land outside upload_path. Python reads the stored
+# names (orig_filename) as UTF-8, as Java's ZipFile in Nexus does,
+# ignoring Unicode path aliases; unzip hides text after a NUL and globs
+# its archive argument. Parsers can still disagree on an ambiguous archive,
+# so this refuses data around the archive and duplicate names, then
+# writes the checked file entries to a fresh zip at $2, which is what
+# gets uploaded.
+canonicalise_unpack_archive() {
+  local archive="$1" output="$2" bad rc=0
+  if ! command -v python3 > /dev/null 2>&1; then
+    echo 'Error: unpack needs python3 to check the archive ❌'
+    exit 1
+  fi
+  bad=$(python3 - "$archive" "$output" <<'PY'
+import os
+import re
+import shutil
+import struct
+import sys
+import zipfile
+import zlib
+
+
+def show(name):
+    return "   " + re.sub(r"[\x00-\x1f]", lambda m: f"\\x{ord(m[0]):02x}", name)
+
+
+def refuse(code, lines):
+    for line in lines[:10]:
+        print(line)
+    sys.exit(code)
+
+
+source, output = sys.argv[1], sys.argv[2]
+try:
+    with open(source, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        handle.seek(max(0, size - 65557))
+        tail = handle.read()
+        end = tail.rfind(b"PK\x05\x06")
+        if end < 0 or len(tail) - end < 22:
+            sys.exit(2)
+        (comment,) = struct.unpack_from("<H", tail, end + 20)
+        with zipfile.ZipFile(handle) as archive:
+            infos = archive.infolist()
+            # Java decodes every name as UTF-8; Python uses cp437 when
+            # the UTF-8 flag is clear, which round-trips the raw bytes
+            names, garbled = [], []
+            for info in infos:
+                name = info.orig_filename
+                if not info.flag_bits & 0x800:
+                    try:
+                        name = name.encode("cp437").decode("utf-8")
+                    except UnicodeDecodeError:
+                        garbled.append(name.encode("cp437").decode(
+                            "ascii", "backslashreplace"))
+                names.append(name)
+            # Nexus skips directory entries, so it needs a file to publish
+            if not any(not name.endswith("/") for name in names):
+                sys.exit(2)
+            if end + 22 + comment != len(tail):
+                refuse(3, ["   data after the end of the archive"])
+            if min(info.header_offset for info in infos) != 0:
+                refuse(3, ["   data before the first entry"])
+            if garbled:
+                refuse(3, [show(n) + " (not UTF-8)" for n in garbled])
+            seen = set()
+            twice = [n for n in names if n in seen or seen.add(n)]
+            if twice:
+                refuse(3, [show(n) + " (duplicate)" for n in twice])
+            bad = [
+                name for name in names
+                if name.startswith("/") or "\\" in name or "\0" in name
+                or ".." in name.split("/")
+            ]
+            if bad:
+                refuse(1, [show(name) for name in bad])
+            with zipfile.ZipFile(output + ".part", "w",
+                                 zipfile.ZIP_DEFLATED) as rebuilt:
+                for info, name in zip(infos, names):
+                    if info.is_dir():
+                        continue
+                    entry = zipfile.ZipInfo(name, info.date_time)
+                    entry.compress_type = zipfile.ZIP_DEFLATED
+                    entry.external_attr = info.external_attr
+                    large = info.file_size >= zipfile.ZIP64_LIMIT
+                    with archive.open(info) as data, rebuilt.open(
+                        entry, "w", force_zip64=large
+                    ) as copy:
+                        shutil.copyfileobj(data, copy)
+except (OSError, EOFError, RuntimeError, NotImplementedError, ValueError,
+        zipfile.BadZipFile, zlib.error):
+    sys.exit(2)
+os.replace(output + ".part", output)
+PY
+  ) || rc=$?
+  case "$rc" in
+    0) ;;
+    1)
+      echo "Error: unpack refuses $archive; these entries would" \
+        'escape upload_path (absolute, backslash, NUL or ".." names) ❌'
+      printf '%s\n' "$bad"
+      exit 1
+      ;;
+    3)
+      echo "Error: unpack refuses $archive; it is ambiguous, so Nexus" \
+        'could read other entries than the ones checked ❌'
+      printf '%s\n' "$bad"
+      exit 1
+      ;;
+    *)
+      echo "Error: unpack found no files in $archive; it is empty," \
+        'holds directories alone or is not a zip archive ❌'
+      exit 1
+      ;;
+  esac
+}
+
 # Prepare upload path
 if [ -n "$upload_path" ]; then
   upload_path=$(echo "$upload_path" | sed 's|^/||; s|/$||')
@@ -889,7 +1019,13 @@ if [ -f "$files_path" ]; then
       'or a .zip file ❌'
     exit 1
   fi
-  target_files=("$files_path")
+  if [ "$repo_format" = "unpack" ]; then
+    # Upload a rebuilt copy of the checked entries, never the original
+    unpack_dir=$(mktemp -d)
+    target_files=("${unpack_dir}/$(basename "$files_path")")
+  else
+    target_files=("$files_path")
+  fi
 elif [ -d "$files_path" ] && [ "$repo_format" = "unpack" ]; then
   build_unpack_archive
 elif [ -d "$files_path" ]; then
@@ -903,6 +1039,14 @@ elif [ -d "$files_path" ]; then
 else
   echo 'Error: Invalid files_path; must be file or directory ❌'
   exit 1
+fi
+
+if [ "$repo_format" = "unpack" ] && [ ${#target_files[@]} -gt 0 ]; then
+  if [ -f "$files_path" ]; then
+    canonicalise_unpack_archive "$files_path" "${target_files[0]}"
+  else
+    canonicalise_unpack_archive "${target_files[0]}" "${target_files[0]}"
+  fi
 fi
 
 if [ ${#target_files[@]} -eq 0 ]; then
